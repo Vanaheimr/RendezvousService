@@ -18,6 +18,7 @@
 #region Usings
 
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using System.Net;
 using System.Net.Sockets;
 
@@ -142,27 +143,127 @@ namespace org.GraphDefined.Vanaheimr.Rendezvous
         #region ConnectPorts(Command)
 
         /// <summary>
-        /// Open a new rendezvous.
+        /// Open a new rendezvous and return the protocol response.
+        /// Use <see cref="TryConnectPorts"/> when the rendezvous itself is needed.
         /// </summary>
         /// <param name="Command">A ConnectPorts command.</param>
         public CommandResponse ConnectPorts(ConnectPortsCommand Command)
+
+            => OpenSession(Command).Response;
+
+        #endregion
+
+        #region TryConnectPorts(Command, out Session, out Response)
+
+        /// <summary>
+        /// Open a new rendezvous and return it.
+        ///
+        /// This is the typed variant for callers within the same process: it hands
+        /// out the rendezvous itself, so that the chosen TCP ports of a '?' do not
+        /// have to be parsed out of the response text.
+        /// </summary>
+        /// <param name="Command">A ConnectPorts command.</param>
+        /// <param name="Session">The new rendezvous, when successful.</param>
+        /// <param name="Response">The protocol response, successful or not.</param>
+        public Boolean TryConnectPorts(ConnectPortsCommand                        Command,
+                                       [NotNullWhen(true)] out RendezvousSession?  Session,
+                                                           out CommandResponse     Response)
+        {
+
+            (Response, Session) = OpenSession(Command);
+
+            return Response.IsSuccess;
+
+        }
+
+        #endregion
+
+        #region DisconnectPorts(Command)
+
+        /// <summary>
+        /// Close an existing rendezvous and return the protocol response.
+        /// Use <see cref="TryDisconnectPorts"/> when the rendezvous itself is needed.
+        /// </summary>
+        /// <param name="Command">A DisconnectPorts command.</param>
+        public CommandResponse DisconnectPorts(DisconnectPortsCommand Command)
+
+            => CloseSession(Command).Response;
+
+        #endregion
+
+        #region TryDisconnectPorts(Command, out Session, out Response)
+
+        /// <summary>
+        /// Close an existing rendezvous and return it.
+        ///
+        /// Closing is asynchronous: await <see cref="RendezvousSession.Completion"/>
+        /// of the returned rendezvous to know when its TCP ports are free again.
+        /// Looking the rendezvous up afterwards would be a race, as a closed
+        /// rendezvous is unregistered.
+        /// </summary>
+        /// <param name="Command">A DisconnectPorts command.</param>
+        /// <param name="Session">The closed rendezvous, when successful.</param>
+        /// <param name="Response">The protocol response, successful or not.</param>
+        public Boolean TryDisconnectPorts(DisconnectPortsCommand                     Command,
+                                          [NotNullWhen(true)] out RendezvousSession?  Session,
+                                                              out CommandResponse     Response)
+        {
+
+            (Response, Session) = CloseSession(Command);
+
+            return Response.IsSuccess;
+
+        }
+
+        #endregion
+
+
+        #region (private) OpenSession(Command)
+
+        /// <summary>
+        /// Open a new rendezvous: validate the request, bind all TCP ports and
+        /// start waiting for the clients.
+        /// </summary>
+        /// <param name="Command">A ConnectPorts command.</param>
+        private (CommandResponse Response, RendezvousSession? Session)
+
+            OpenSession(ConnectPortsCommand Command)
+
         {
 
             #region Validate the request
 
+            // The parser rejects all of this as well, but a caller using the
+            // typed API directly never went through the parser.
+
             if (Command.Ports.Count < CommandParser.MinPortsPerSession)
-                return CommandResponse.Error(ResponseCode.InvalidSyntax,
-                                             $"A rendezvous requires at least {CommandParser.MinPortsPerSession} ports!");
+                return (CommandResponse.Error(ResponseCode.InvalidSyntax,
+                                              $"A rendezvous requires at least {CommandParser.MinPortsPerSession} ports!"), null);
 
             if (Command.Ports.Count > options.MaxPortsPerSession)
-                return CommandResponse.Error(ResponseCode.TooManyPorts,
-                                             $"A rendezvous must not have more than {options.MaxPortsPerSession} ports!");
+                return (CommandResponse.Error(ResponseCode.TooManyPorts,
+                                              $"A rendezvous must not have more than {options.MaxPortsPerSession} ports!"), null);
+
+            if (Command.Secret.Length == 0)
+                return (CommandResponse.Error(ResponseCode.InvalidSyntax,
+                                              "The secret must not be empty!"), null);
+
+            var requestedPorts = new HashSet<UInt16>();
 
             foreach (var port in Command.Ports)
             {
-                if (port.Port is UInt16 fixedPort && !options.IsAllowedDataPort(fixedPort))
-                    return CommandResponse.Error(ResponseCode.PortNotAllowed,
-                                                 $"TCP port {fixedPort} is not within the allowed port range {options.MinDataPort} - {options.MaxDataPort}!");
+
+                if (port.Port is not UInt16 fixedPort)
+                    continue;
+
+                if (!options.IsAllowedDataPort(fixedPort))
+                    return (CommandResponse.Error(ResponseCode.PortNotAllowed,
+                                                  $"TCP port {fixedPort} is not within the allowed port range {options.MinDataPort} - {options.MaxDataPort}!"), null);
+
+                if (!requestedPorts.Add(fixedPort))
+                    return (CommandResponse.Error(ResponseCode.InvalidSyntax,
+                                                  $"Duplicate TCP port {fixedPort}!"), null);
+
             }
 
             #endregion
@@ -175,14 +276,14 @@ namespace org.GraphDefined.Vanaheimr.Rendezvous
             {
 
                 if (sessions.Count >= options.MaxSessions)
-                    return CommandResponse.Error(ResponseCode.TooManySessions,
-                                                 $"The service is already running {options.MaxSessions} rendezvous!");
+                    return (CommandResponse.Error(ResponseCode.TooManySessions,
+                                                  $"The service is already running {options.MaxSessions} rendezvous!"), null);
 
                 foreach (var port in Command.Ports)
                 {
                     if (port.Port is UInt16 fixedPort && portOwners.ContainsKey(fixedPort))
-                        return CommandResponse.Error(ResponseCode.PortInUse,
-                                                     $"TCP port {fixedPort} is already used by another rendezvous!");
+                        return (CommandResponse.Error(ResponseCode.PortInUse,
+                                                      $"TCP port {fixedPort} is already used by another rendezvous!"), null);
                 }
 
                 var endpoints  = new SessionEndpoint?[Command.Ports.Count];
@@ -236,8 +337,8 @@ namespace org.GraphDefined.Vanaheimr.Rendezvous
                     logger.LogWarning("Could not open the requested TCP ports [{Ports}]: {Message}",
                                       String.Join(", ", Command.Ports), e.Message);
 
-                    return CommandResponse.Error(ResponseCode.PortInUse,
-                                                 $"Could not open the requested TCP ports: {e.SocketErrorCode}!");
+                    return (CommandResponse.Error(ResponseCode.PortInUse,
+                                                  $"Could not open the requested TCP ports: {e.SocketErrorCode}!"), null);
 
                 }
 
@@ -267,7 +368,7 @@ namespace org.GraphDefined.Vanaheimr.Rendezvous
 
                 #endregion
 
-                return CommandResponse.Ok($"{ConnectPortsCommand.Name}([{String.Join(", ", session.Ports)}], {profile.AsText()})");
+                return (CommandResponse.Ok($"{ConnectPortsCommand.Name}([{String.Join(", ", session.Ports)}], {profile.AsText()})"), session);
 
             }
 
@@ -275,26 +376,34 @@ namespace org.GraphDefined.Vanaheimr.Rendezvous
 
         #endregion
 
-        #region DisconnectPorts(Command)
+        #region (private) CloseSession(Command)
 
         /// <summary>
-        /// Close an existing rendezvous.
+        /// Close an existing rendezvous: all given TCP ports must belong to the
+        /// same rendezvous and the secret must authorize the command.
         /// </summary>
         /// <param name="Command">A DisconnectPorts command.</param>
-        public CommandResponse DisconnectPorts(DisconnectPortsCommand Command)
+        private (CommandResponse Response, RendezvousSession? Session)
+
+            CloseSession(DisconnectPortsCommand Command)
+
         {
 
+            if (Command.Ports.Count == 0)
+                return (CommandResponse.Error(ResponseCode.InvalidSyntax,
+                                              "At least one TCP port is required!"), null);
+
             if (!portOwners.TryGetValue(Command.Ports[0], out var session))
-                return CommandResponse.Error(ResponseCode.UnknownSession,
-                                             $"There is no rendezvous on TCP port {Command.Ports[0]}!");
+                return (CommandResponse.Error(ResponseCode.UnknownSession,
+                                              $"There is no rendezvous on TCP port {Command.Ports[0]}!"), null);
 
             foreach (var port in Command.Ports)
             {
                 if (!portOwners.TryGetValue(port, out var owner) ||
                     !ReferenceEquals(owner, session))
                 {
-                    return CommandResponse.Error(ResponseCode.UnknownSession,
-                                                 $"TCP port {port} does not belong to the same rendezvous!");
+                    return (CommandResponse.Error(ResponseCode.UnknownSession,
+                                                  $"TCP port {port} does not belong to the same rendezvous!"), null);
                 }
             }
 
@@ -304,14 +413,15 @@ namespace org.GraphDefined.Vanaheimr.Rendezvous
                 logger.LogWarning("Rejected an unauthorized {Command} for rendezvous {SessionId}!",
                                   DisconnectPortsCommand.Name, session.Id);
 
-                return CommandResponse.Error(ResponseCode.Unauthorized,
-                                             "The given secret does not authorize this command!");
+                // Not even the rendezvous itself is handed out here.
+                return (CommandResponse.Error(ResponseCode.Unauthorized,
+                                              "The given secret does not authorize this command!"), null);
 
             }
 
             session.Close(SessionCloseReason.DisconnectRequested);
 
-            return CommandResponse.Ok($"{DisconnectPortsCommand.Name}([{String.Join(", ", session.Ports)}])");
+            return (CommandResponse.Ok($"{DisconnectPortsCommand.Name}([{String.Join(", ", session.Ports)}])"), session);
 
         }
 

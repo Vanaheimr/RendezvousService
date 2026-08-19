@@ -71,6 +71,50 @@ The secret authorizes `DisconnectPorts` only - it is not a transport credential.
 Anyone who can reach a rendezvous port can connect to it, so keep the control
 endpoint on an interface you trust.
 
+## The C# API
+
+The text protocol is a thin layer over the `RendezvousManager`, so within the same
+process the commands can be built and executed directly:
+
+```csharp
+await using var manager = new RendezvousManager(
+                              Options.Create(new RendezvousOptions()),
+                              TimeProvider.System,
+                              loggerFactory
+                          );
+
+if (manager.TryConnectPorts(
+        new ConnectPortsCommand(
+            [PortSpecification.Random, PortSpecification.Fixed(30000)],
+            "secret",
+            TransferProfile.Interactive     // optional
+        ),
+        out var session,
+        out var response))
+{
+    Console.WriteLine($"Waiting on TCP/[{String.Join(", ", session.Ports)}]");
+    await session.Completion;               // ...until the rendezvous is closed
+}
+else
+    Console.WriteLine(response.ToProtocolLine());
+```
+
+`TryConnectPorts` and `TryDisconnectPorts` hand out the `RendezvousSession` itself,
+so the ports chosen for a `?` never have to be parsed out of the response text.
+`ConnectPorts`/`DisconnectPorts` return the protocol response only, and
+`Execute(String)` parses and executes a whole command line.
+
+A rendezvous exposes `Ports`, `Profile`, `State`, `BytesRelayed`, `Completion` and
+`Close(reason)`; `manager.TryGetSessionByPort(port, out var session)` finds an open
+one. An unauthorized `TryDisconnectPorts` returns neither success nor the rendezvous.
+
+Two things to keep in mind:
+
+* The typed API bypasses the parser, therefore the manager validates the request
+  itself as well: at least two ports, no duplicates, no empty secret.
+* Without the generic host no `SessionJanitor` is running, so neither the rendezvous
+  nor the idle timeout is enforced until `manager.Sweep()` is called.
+
 ## Transfer profiles
 
 The optional third argument of `ConnectPorts` tells the service what the connection
@@ -183,17 +227,20 @@ RendezvousService/
 RendezvousServiceTests/
 ```
 
+One type per file, named after that type. The only exception is
+`TransferProfileExtensions`, which stays with the enum it parses and formats.
+
 ## Tests
 
 ```bash
 dotnet test
 ```
 
-121 NUnit tests: the command parser (including all of its error cases), the
+134 NUnit tests: the command parser (including all of its error cases), the
 configuration validation, the transfer profiles, real TCP relaying in both
 directions, large transfers, half-close, chat broadcasting, port allocation and
-rollback, authorization, and both timeouts - the latter driven by a
-`FakeTimeProvider` instead of a sleeping test.
+rollback, authorization, the typed C# API, and both timeouts - the latter driven
+by a `FakeTimeProvider` instead of a sleeping test.
 
 ## License
 
