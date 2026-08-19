@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="RendezvousService/RendezvousService.csproj" />
+  <Project Path="RendezvousServiceTests/RendezvousServiceTests.csproj" />
+</Solution>

@@ -1,0 +1,260 @@
+/*
+ * Copyright (c) 2010-2026 GraphDefined GmbH <achim.friedland@graphdefined.com>
+ * This file is part of Vanaheimr RendezvousService <https://www.github.com/Vanaheimr/RendezvousService>
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#region Usings
+
+using System.Net;
+
+#endregion
+
+namespace org.GraphDefined.Vanaheimr.Rendezvous
+{
+
+    /// <summary>
+    /// The transfer profile settings of the rendezvous service.
+    /// </summary>
+    public sealed class TransferProfilesOptions
+    {
+
+        /// <summary>
+        /// The settings used for rendezvous without an explicit transfer profile.
+        /// </summary>
+        public TransferProfileSettings  Balanced       { get; set; } = TransferProfileSettings.Defaults(TransferProfile.Balanced);
+
+        /// <summary>
+        /// The settings used for low latency rendezvous, e.g. chat or SSH.
+        /// </summary>
+        public TransferProfileSettings  Interactive    { get; set; } = TransferProfileSettings.Defaults(TransferProfile.Interactive);
+
+        /// <summary>
+        /// The settings used for high throughput rendezvous, e.g. file transfers.
+        /// </summary>
+        public TransferProfileSettings  Bulk           { get; set; } = TransferProfileSettings.Defaults(TransferProfile.Bulk);
+
+
+        /// <summary>
+        /// Return the settings of the given transfer profile.
+        /// </summary>
+        /// <param name="Profile">A transfer profile.</param>
+        public TransferProfileSettings this[TransferProfile Profile]
+
+            => Profile switch {
+                   TransferProfile.Interactive  => Interactive,
+                   TransferProfile.Bulk         => Bulk,
+                   _                            => Balanced
+               };
+
+    }
+
+
+    /// <summary>
+    /// The configuration of the rendezvous service.
+    /// </summary>
+    public sealed class RendezvousOptions
+    {
+
+        #region Data
+
+        /// <summary>
+        /// The name of the configuration section.
+        /// </summary>
+        public const String SectionName = "Rendezvous";
+
+        #endregion
+
+        #region Properties
+
+        /// <summary>
+        /// The IP address the control endpoint is listening on.
+        /// Defaults to the loopback interface, as the control protocol allows
+        /// everyone who can reach it to open TCP listeners on this machine.
+        /// </summary>
+        public String            ControlAddress          { get; set; } = "127.0.0.1";
+
+        /// <summary>
+        /// The TCP port of the control endpoint.
+        /// A zero asks the operating system for a free port, which is mostly
+        /// useful for tests. The chosen port is written to the log.
+        /// </summary>
+        public UInt16            ControlPort             { get; set; } = 8500;
+
+        /// <summary>
+        /// The IP address the rendezvous listeners are bound to.
+        /// </summary>
+        public String            DataAddress             { get; set; } = "0.0.0.0";
+
+        /// <summary>
+        /// A rendezvous where not all clients have arrived within this time span
+        /// is closed and its listeners are removed.
+        /// </summary>
+        public TimeSpan          RendezvousTimeout       { get; set; } = TimeSpan.FromMinutes(5);
+
+        /// <summary>
+        /// An established rendezvous without any payload within this time span
+        /// is closed and its listeners are removed.
+        /// </summary>
+        public TimeSpan          IdleTimeout             { get; set; } = TimeSpan.FromMinutes(10);
+
+        /// <summary>
+        /// How often the service looks for timed out rendezvous.
+        /// </summary>
+        public TimeSpan          MaintenanceInterval     { get; set; } = TimeSpan.FromSeconds(15);
+
+        /// <summary>
+        /// A control connection without any command within this time span is closed.
+        /// </summary>
+        public TimeSpan          ControlIdleTimeout      { get; set; } = TimeSpan.FromMinutes(2);
+
+        /// <summary>
+        /// The lowest TCP port that may be used for a rendezvous.
+        /// </summary>
+        public UInt16            MinDataPort             { get; set; } = 1024;
+
+        /// <summary>
+        /// The highest TCP port that may be used for a rendezvous.
+        /// </summary>
+        public UInt16            MaxDataPort             { get; set; } = 65535;
+
+        /// <summary>
+        /// The maximum number of concurrent rendezvous.
+        /// </summary>
+        public Int32             MaxSessions             { get; set; } = 256;
+
+        /// <summary>
+        /// The maximum number of ports (and therefore clients) per rendezvous.
+        /// </summary>
+        public Int32             MaxPortsPerSession      { get; set; } = 16;
+
+        /// <summary>
+        /// The maximum number of concurrent control connections.
+        /// </summary>
+        public Int32             MaxControlConnections   { get; set; } = 64;
+
+        /// <summary>
+        /// The maximum length of a single control command in bytes.
+        /// </summary>
+        public Int32             MaxCommandLength        { get; set; } = 4096;
+
+        /// <summary>
+        /// The transfer profile used when a ConnectPorts command does not request one.
+        /// </summary>
+        public TransferProfile   DefaultProfile          { get; set; } = TransferProfile.Balanced;
+
+        /// <summary>
+        /// The buffer sizes and TCP parameters of the transfer profiles.
+        /// </summary>
+        public TransferProfilesOptions  Profiles         { get; set; } = new();
+
+        #endregion
+
+
+        #region ControlIPAddress
+
+        /// <summary>
+        /// The parsed IP address of the control endpoint.
+        /// </summary>
+        public IPAddress ControlIPAddress
+            => IPAddress.Parse(ControlAddress);
+
+        #endregion
+
+        #region DataIPAddress
+
+        /// <summary>
+        /// The parsed IP address of the rendezvous listeners.
+        /// </summary>
+        public IPAddress DataIPAddress
+            => IPAddress.Parse(DataAddress);
+
+        #endregion
+
+        #region IsAllowedDataPort(Port)
+
+        /// <summary>
+        /// Whether the given TCP port may be used for a rendezvous.
+        /// The control port is always excluded, as the rendezvous listeners
+        /// may be bound to a wildcard address overlapping the control endpoint.
+        /// </summary>
+        /// <param name="Port">A TCP port.</param>
+        public Boolean IsAllowedDataPort(UInt16 Port)
+
+            => Port >= MinDataPort &&
+               Port <= MaxDataPort &&
+               Port != ControlPort;
+
+        #endregion
+
+        #region Validate()
+
+        /// <summary>
+        /// Validate this configuration and return a human readable error message
+        /// for every invalid value.
+        /// </summary>
+        public IReadOnlyList<String> Validate()
+        {
+
+            var errors = new List<String>();
+
+            if (!IPAddress.TryParse(ControlAddress, out _))
+                errors.Add($"{SectionName}.{nameof(ControlAddress)} is not a valid IP address: '{ControlAddress}'!");
+
+            if (!IPAddress.TryParse(DataAddress,    out _))
+                errors.Add($"{SectionName}.{nameof(DataAddress)} is not a valid IP address: '{DataAddress}'!");
+
+            if (RendezvousTimeout    <= TimeSpan.Zero)
+                errors.Add($"{SectionName}.{nameof(RendezvousTimeout)} must be positive, but is {RendezvousTimeout}!");
+
+            if (IdleTimeout          <= TimeSpan.Zero)
+                errors.Add($"{SectionName}.{nameof(IdleTimeout)} must be positive, but is {IdleTimeout}!");
+
+            if (MaintenanceInterval  <= TimeSpan.Zero)
+                errors.Add($"{SectionName}.{nameof(MaintenanceInterval)} must be positive, but is {MaintenanceInterval}!");
+
+            if (ControlIdleTimeout   <= TimeSpan.Zero)
+                errors.Add($"{SectionName}.{nameof(ControlIdleTimeout)} must be positive, but is {ControlIdleTimeout}!");
+
+            if (MinDataPort == 0)
+                errors.Add($"{SectionName}.{nameof(MinDataPort)} must not be zero!");
+
+            if (MinDataPort > MaxDataPort)
+                errors.Add($"{SectionName}.{nameof(MinDataPort)} ({MinDataPort}) must not be greater than {nameof(MaxDataPort)} ({MaxDataPort})!");
+
+            if (MaxSessions           < 1)
+                errors.Add($"{SectionName}.{nameof(MaxSessions)} must be at least 1, but is {MaxSessions}!");
+
+            if (MaxPortsPerSession    < 2)
+                errors.Add($"{SectionName}.{nameof(MaxPortsPerSession)} must be at least 2, but is {MaxPortsPerSession}!");
+
+            if (MaxControlConnections < 1)
+                errors.Add($"{SectionName}.{nameof(MaxControlConnections)} must be at least 1, but is {MaxControlConnections}!");
+
+            if (MaxCommandLength      < 64)
+                errors.Add($"{SectionName}.{nameof(MaxCommandLength)} must be at least 64 bytes, but is {MaxCommandLength}!");
+
+            errors.AddRange(Profiles.Balanced.   Validate($"{SectionName}.{nameof(Profiles)}.{nameof(TransferProfilesOptions.Balanced)}"));
+            errors.AddRange(Profiles.Interactive.Validate($"{SectionName}.{nameof(Profiles)}.{nameof(TransferProfilesOptions.Interactive)}"));
+            errors.AddRange(Profiles.Bulk.       Validate($"{SectionName}.{nameof(Profiles)}.{nameof(TransferProfilesOptions.Bulk)}"));
+
+            return errors;
+
+        }
+
+        #endregion
+
+    }
+
+}

@@ -1,0 +1,29 @@
+*.pidb
+*.VisualState.xml
+*.suo
+*.user
+*.csproj.user
+*.psess
+*.vsp
+*/TestResult.xml
+*/obj
+*/bin
+**/obj
+**/bin
+[Oo]bj/
+[Bb]in/
+
+.vs/
+.idea/
+
+# 'dotnet test --blame-hang' writes a full process dump per aborted run in here.
+# Those are hundreds of megabytes each and must never end up in the history.
+TestResults/
+
+# Where a CI workflow would point --results-directory for its .trx logs. Run the
+# same command locally to reproduce a CI result and it lands in the working tree.
+artifacts/
+
+# Claude Code creates its worktrees in here, and each one is a full checkout of
+# this repository. They belong to a single session, not to the history.
+.claude/worktrees/
