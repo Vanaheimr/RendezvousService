@@ -5,8 +5,8 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <RootNamespace>org.GraphDefined.Vanaheimr.Rendezvous</RootNamespace>
-    <AssemblyName>org.GraphDefined.Vanaheimr.Rendezvous</AssemblyName>
+    <RootNamespace>org.GraphDefined.Vanaheimr.Rendezvous.Service</RootNamespace>
+    <AssemblyName>org.GraphDefined.Vanaheimr.RendezvousService</AssemblyName>
     <InvariantGlobalization>true</InvariantGlobalization>
     <EnableNETAnalyzers>true</EnableNETAnalyzers>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
@@ -17,9 +17,11 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- The tests reach into the relay internals (chunk pooling, socket pumps),
-         which are deliberately not part of the public surface. -->
     <InternalsVisibleTo Include="org.GraphDefined.Vanaheimr.Rendezvous.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Rendezvous\Rendezvous.csproj" />
   </ItemGroup>
 
   <ItemGroup>

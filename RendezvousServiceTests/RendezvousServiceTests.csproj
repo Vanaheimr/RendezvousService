@@ -21,6 +21,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\Rendezvous\Rendezvous.csproj" />
     <ProjectReference Include="..\RendezvousService\RendezvousService.csproj" />
   </ItemGroup>
 

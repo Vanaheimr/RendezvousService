@@ -24,6 +24,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 using org.GraphDefined.Vanaheimr.Rendezvous;
+using org.GraphDefined.Vanaheimr.Rendezvous.Service;
 
 #endregion
 
@@ -57,10 +58,16 @@ builder.Services.AddOptions<RendezvousOptions>().
                  Bind(builder.Configuration.GetSection(RendezvousOptions.SectionName)).
                  ValidateOnStart();
 
-builder.Services.AddSingleton<RendezvousManager>();
+// The library knows nothing about IOptions or dependency injection, the
+// application hands it what it needs. The manager looks after its own
+// timeouts, therefore there is no janitor to register here.
+builder.Services.AddSingleton(serviceProvider => new RendezvousManager(
+                                                     serviceProvider.GetRequiredService<IOptions<RendezvousOptions>>().Value,
+                                                     serviceProvider.GetRequiredService<TimeProvider>(),
+                                                     serviceProvider.GetRequiredService<ILoggerFactory>()
+                                                 ));
 
 builder.Services.AddHostedService<ControlServer>();
-builder.Services.AddHostedService<SessionJanitor>();
 
 #endregion
 

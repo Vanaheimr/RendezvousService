@@ -83,9 +83,13 @@ namespace org.GraphDefined.Vanaheimr.Rendezvous.Tests
         {
 
             var configuration = new RendezvousOptions {
-                                    ControlAddress  = "127.0.0.1",
-                                    ControlPort     = 0,
-                                    DataAddress     = "127.0.0.1"
+                                    ControlAddress   = "127.0.0.1",
+                                    ControlPort      = 0,
+                                    DataAddress      = "127.0.0.1",
+
+                                    // The tests drive the maintenance themselves,
+                                    // so that the timeouts stay deterministic.
+                                    AutoMaintenance  = false
                                 };
 
             Configure?.Invoke(configuration);
@@ -99,7 +103,7 @@ namespace org.GraphDefined.Vanaheimr.Rendezvous.Tests
                        configuration,
                        time,
                        new RendezvousManager(
-                           Microsoft.Extensions.Options.Options.Create(configuration),
+                           configuration,
                            time,
                            NullLoggerFactory.Instance
                        )

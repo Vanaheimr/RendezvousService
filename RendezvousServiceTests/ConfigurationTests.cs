@@ -15,6 +15,12 @@
  * limitations under the License.
  */
 
+#region Usings
+
+using org.GraphDefined.Vanaheimr.Rendezvous.Service;
+
+#endregion
+
 namespace org.GraphDefined.Vanaheimr.Rendezvous.Tests
 {
 

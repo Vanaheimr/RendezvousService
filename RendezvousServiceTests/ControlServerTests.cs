@@ -23,6 +23,8 @@ using System.Text;
 
 using Microsoft.Extensions.Logging.Abstractions;
 
+using org.GraphDefined.Vanaheimr.Rendezvous.Service;
+
 #endregion
 
 namespace org.GraphDefined.Vanaheimr.Rendezvous.Tests
@@ -68,9 +70,13 @@ namespace org.GraphDefined.Vanaheimr.Rendezvous.Tests
 
                 Configure?.Invoke(configuration);
 
-                var options  = Microsoft.Extensions.Options.Options.Create(configuration);
-                var manager  = new RendezvousManager(options, TimeProvider.System, NullLoggerFactory.Instance);
-                var server   = new ControlServer   (manager, options, NullLoggerFactory.Instance);
+                // The library takes the configuration as it is, the application
+                // wraps it into IOptions for its own dependency injection.
+                var manager  = new RendezvousManager(configuration, TimeProvider.System, NullLoggerFactory.Instance);
+
+                var server   = new ControlServer(manager,
+                                                 Microsoft.Extensions.Options.Options.Create(configuration),
+                                                 NullLoggerFactory.Instance);
 
                 await server.StartAsync(CancellationToken.None);
 

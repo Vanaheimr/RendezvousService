@@ -78,6 +78,13 @@ namespace org.GraphDefined.Vanaheimr.Rendezvous
         public TimeSpan          MaintenanceInterval     { get; set; } = TimeSpan.FromSeconds(15);
 
         /// <summary>
+        /// Whether a rendezvous manager looks after the timeouts itself.
+        /// Disable this to drive the maintenance from somewhere else, e.g. from
+        /// an own scheduler, and call RendezvousManager.Sweep() instead.
+        /// </summary>
+        public Boolean           AutoMaintenance         { get; set; } = true;
+
+        /// <summary>
         /// A control connection without any command within this time span is closed.
         /// </summary>
         public TimeSpan          ControlIdleTimeout      { get; set; } = TimeSpan.FromMinutes(2);

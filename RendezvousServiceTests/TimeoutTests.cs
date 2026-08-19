@@ -257,33 +257,26 @@ namespace org.GraphDefined.Vanaheimr.Rendezvous.Tests
 
             var session   = host.Session;
 
-            var janitor   = new SessionJanitor(host.Manager,
-                                               Microsoft.Extensions.Options.Options.Create(host.Configuration),
-                                               host.Time,
-                                               Microsoft.Extensions.Logging.Abstractions.NullLogger<SessionJanitor>.Instance);
+            // A plain object with a timer - no hosting framework involved.
+            await using var janitor = new SessionJanitor(host.Manager,
+                                                         host.Configuration.MaintenanceInterval,
+                                                         host.Time);
 
-            await janitor.StartAsync(CancellationToken.None);
+            janitor.Start();
 
-            try
-            {
+            // Wait until the janitor really watches the clock, otherwise
+            // the time below would be advanced before its timer exists.
+            await janitor.Running.WaitAsync(TestNet.Timeout);
 
-                // Wait until the janitor really watches the clock, otherwise
-                // the time below would be advanced before its timer exists.
-                await janitor.Running.WaitAsync(TestNet.Timeout);
+            // The janitor is running on the same controllable clock.
+            host.Time.Advance(TimeSpan.FromMinutes(6));
 
-                // The janitor is running on the same controllable clock.
-                host.Time.Advance(TimeSpan.FromMinutes(6));
+            await session.Completion.WaitAsync(TestNet.Timeout);
 
-                await session.Completion.WaitAsync(TestNet.Timeout);
-
+            Assert.Multiple(() => {
                 Assert.That(session.CloseReason, Is.EqualTo(SessionCloseReason.RendezvousTimeout));
-
-            }
-            finally
-            {
-                await janitor.StopAsync(CancellationToken.None);
-                janitor.Dispose();
-            }
+                Assert.That(janitor.IsRunning,   Is.True);
+            });
 
         }
 

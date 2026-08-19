@@ -26,7 +26,7 @@ using Microsoft.Extensions.Logging;
 
 #endregion
 
-namespace org.GraphDefined.Vanaheimr.Rendezvous
+namespace org.GraphDefined.Vanaheimr.Rendezvous.Service
 {
 
     /// <summary>

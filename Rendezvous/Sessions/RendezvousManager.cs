@@ -23,7 +23,7 @@ using System.Net;
 using System.Net.Sockets;
 
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Logging.Abstractions;
 
 #endregion
 
@@ -52,6 +52,7 @@ namespace org.GraphDefined.Vanaheimr.Rendezvous
         private readonly ConcurrentDictionary<Guid,   RendezvousSession>  sessions    = [];
         private readonly ConcurrentDictionary<UInt16, RendezvousSession>  portOwners  = [];
         private readonly Lock                                             createLock  = new();
+        private readonly SessionJanitor?                                  janitor;
 
         #endregion
 
@@ -69,25 +70,67 @@ namespace org.GraphDefined.Vanaheimr.Rendezvous
         public Int32 Count
             => sessions.Count;
 
+        /// <summary>
+        /// The janitor looking after the timeouts, or null when the caller
+        /// disabled the automatic maintenance.
+        /// </summary>
+        internal SessionJanitor? Janitor
+            => janitor;
+
         #endregion
 
         #region Constructor(s)
 
         /// <summary>
         /// Create a new rendezvous manager.
+        ///
+        /// Everything is optional, so that a plain "new RendezvousManager()" is
+        /// enough to open rendezvous from any application - no hosting, no
+        /// dependency injection and no control endpoint required.
         /// </summary>
-        /// <param name="Options">The configuration of the rendezvous service.</param>
-        /// <param name="TimeProvider">A time provider.</param>
-        /// <param name="LoggerFactory">A logger factory.</param>
-        public RendezvousManager(IOptions<RendezvousOptions>  Options,
-                                 TimeProvider                 TimeProvider,
-                                 ILoggerFactory               LoggerFactory)
+        /// <param name="Options">An optional configuration, defaults are used otherwise.</param>
+        /// <param name="TimeProvider">An optional time provider, e.g. for tests.</param>
+        /// <param name="LoggerFactory">An optional logger factory.</param>
+        /// <exception cref="ArgumentException">When the given configuration is invalid.</exception>
+        public RendezvousManager(RendezvousOptions?  Options         = null,
+                                 TimeProvider?       TimeProvider    = null,
+                                 ILoggerFactory?     LoggerFactory   = null)
         {
 
-            this.options        = Options.Value;
-            this.timeProvider   = TimeProvider;
-            this.loggerFactory  = LoggerFactory;
-            this.logger         = LoggerFactory.CreateLogger<RendezvousManager>();
+            this.options        = Options        ?? new RendezvousOptions();
+            this.timeProvider   = TimeProvider   ?? System.TimeProvider.System;
+            this.loggerFactory  = LoggerFactory  ?? NullLoggerFactory.Instance;
+            this.logger         = this.loggerFactory.CreateLogger<RendezvousManager>();
+
+            #region Fail fast on an invalid configuration
+
+            var errors = this.options.Validate();
+
+            if (errors.Count > 0)
+                throw new ArgumentException(
+                          $"Invalid rendezvous configuration: {String.Join(" ", errors)}",
+                          nameof(Options)
+                      );
+
+            #endregion
+
+            #region Look after the timeouts, unless the caller wants to do it
+
+            if (this.options.AutoMaintenance)
+            {
+
+                janitor = new SessionJanitor(
+                              this,
+                              this.options.MaintenanceInterval,
+                              this.timeProvider,
+                              this.loggerFactory.CreateLogger<SessionJanitor>()
+                          );
+
+                janitor.Start();
+
+            }
+
+            #endregion
 
         }
 
@@ -574,10 +617,14 @@ namespace org.GraphDefined.Vanaheimr.Rendezvous
         #region DisposeAsync()
 
         /// <summary>
-        /// Close all rendezvous and wait until all TCP ports are free again.
+        /// Stop the maintenance, close all rendezvous and wait until all TCP
+        /// ports are free again.
         /// </summary>
         public async ValueTask DisposeAsync()
         {
+
+            if (janitor is not null)
+                await janitor.DisposeAsync().ConfigureAwait(false);
 
             var openSessions = sessions.Values.ToArray();
 

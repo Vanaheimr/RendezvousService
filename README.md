@@ -5,8 +5,18 @@ the service opens one listener per port, waits for the clients and then relays t
 data between them. Two clients get a plain bidirectional pipe, three or more clients
 get a broadcast - a chat.
 
-Everything is built on .NET 10 with `Microsoft.Extensions.Hosting`, `TimeProvider`,
-`System.Threading.Channels` and pooled buffers.
+It comes in two parts:
+
+| | |
+|---|---|
+| **`Rendezvous`** | The library. Everything needed to open, relay and close rendezvous, usable from any application. Its only dependency is `Microsoft.Extensions.Logging.Abstractions` - no hosting, no dependency injection, no configuration binder. |
+| **`RendezvousService`** | The application: the TCP control endpoint, the generic host and the configuration binding. |
+
+So the whole service is one way to use the library, not the only one - see
+[The C# API](#the-c-api) below.
+
+Everything is built on .NET 10 with `TimeProvider`, `System.Threading.Channels`
+and pooled buffers.
 
 ## The control protocol
 
@@ -73,15 +83,12 @@ endpoint on an interface you trust.
 
 ## The C# API
 
-The text protocol is a thin layer over the `RendezvousManager`, so within the same
-process the commands can be built and executed directly:
+The text protocol is a thin layer over the `RendezvousManager`, so an application
+embedding the library builds and executes the commands directly - no control
+endpoint, no host, not even a configuration object:
 
 ```csharp
-await using var manager = new RendezvousManager(
-                              Options.Create(new RendezvousOptions()),
-                              TimeProvider.System,
-                              loggerFactory
-                          );
+await using var manager = new RendezvousManager();     // that is all it takes
 
 if (manager.TryConnectPorts(
         new ConnectPortsCommand(
@@ -108,12 +115,41 @@ A rendezvous exposes `Ports`, `Profile`, `State`, `BytesRelayed`, `Completion` a
 `Close(reason)`; `manager.TryGetSessionByPort(port, out var session)` finds an open
 one. An unauthorized `TryDisconnectPorts` returns neither success nor the rendezvous.
 
-Two things to keep in mind:
+The constructor takes an optional `RendezvousOptions`, `TimeProvider` and
+`ILoggerFactory` - a plain object, not an `IOptions<T>`, so the library does not
+drag the options framework into your application. An invalid configuration throws
+right away instead of failing later on some port. Within a host it is registered
+like this:
 
-* The typed API bypasses the parser, therefore the manager validates the request
-  itself as well: at least two ports, no duplicates, no empty secret.
-* Without the generic host no `SessionJanitor` is running, so neither the rendezvous
-  nor the idle timeout is enforced until `manager.Sweep()` is called.
+```csharp
+builder.Services.AddSingleton(serviceProvider => new RendezvousManager(
+                                                     serviceProvider.GetRequiredService<IOptions<RendezvousOptions>>().Value,
+                                                     serviceProvider.GetRequiredService<TimeProvider>(),
+                                                     serviceProvider.GetRequiredService<ILoggerFactory>()
+                                                 ));
+```
+
+Note that the typed API bypasses the parser, therefore the manager validates the
+request itself as well: at least two ports, no duplicates, no empty secret.
+
+### Who enforces the timeouts?
+
+The manager creates a `SessionJanitor` for itself and disposes it together with
+the manager, so the timeouts work out of the box. The janitor is a plain object
+with a `PeriodicTimer` - deliberately *not* an `IHostedService`, because a library
+must not force a hosting framework onto its users.
+
+Set `AutoMaintenance = false` to take over:
+
+```csharp
+await using var manager = new RendezvousManager(new RendezvousOptions { AutoMaintenance = false });
+
+manager.Sweep();                    // whenever it suits you, e.g. from your own scheduler
+
+// ...or run the janitor yourself, on your own clock:
+await using var janitor = new SessionJanitor(manager, TimeSpan.FromSeconds(15), timeProvider);
+janitor.Start();
+```
 
 ## Transfer profiles
 
@@ -205,6 +241,7 @@ printf 'ConnectPorts([?,?], mySecret, chat)\r\n' | nc 127.0.0.1 8500
 | `RendezvousTimeout` | `00:05:00` | Maximum time until all clients arrived |
 | `IdleTimeout` | `00:10:00` | Maximum time without relayed payload |
 | `MaintenanceInterval` | `00:00:15` | How often timed out rendezvous are looked for |
+| `AutoMaintenance` | `true` | Whether the manager looks after the timeouts itself |
 | `ControlIdleTimeout` | `00:02:00` | Maximum time a control connection may be silent |
 | `MaxSessions` | `256` | Maximum number of concurrent rendezvous |
 | `MaxPortsPerSession` | `16` | Maximum number of clients per rendezvous |
@@ -218,14 +255,23 @@ An invalid configuration fails the startup with a list of all problems.
 ## Source layout
 
 ```
-RendezvousService/
-  Configuration/   RendezvousOptions, TransferProfile, TransferProfileSettings
-  Protocol/        the command parser, commands and responses
-  Sessions/        RendezvousManager, RendezvousSession, SessionEndpoint, SessionJanitor
-  Relay/           PipeRelay (two clients), BroadcastRelay (chat), pooled chunks
-  Control/         ControlServer and ControlConnection
+Rendezvous/                 the library, namespace org.GraphDefined.Vanaheimr.Rendezvous
+  Configuration/            RendezvousOptions, TransferProfile, TransferProfileSettings
+  Protocol/                 the command parser, commands and responses
+  Sessions/                 RendezvousManager, RendezvousSession, SessionEndpoint, SessionJanitor
+  Relay/                    PipeRelay (two clients), BroadcastRelay (chat), pooled chunks
+
+RendezvousService/          the application, namespace ...Rendezvous.Service
+  Control/                  ControlServer and ControlConnection
+  Configuration/            RendezvousOptionsValidator (IValidateOptions)
+  Program.cs                the generic host
+
 RendezvousServiceTests/
 ```
+
+Everything that binds to a framework - `BackgroundService`, `IOptions`,
+`IValidateOptions`, the configuration binder - lives in the application. The
+library sees none of it.
 
 One type per file, named after that type. The only exception is
 `TransferProfileExtensions`, which stays with the enum it parses and formats.
@@ -236,11 +282,12 @@ One type per file, named after that type. The only exception is
 dotnet test
 ```
 
-134 NUnit tests: the command parser (including all of its error cases), the
+142 NUnit tests: the command parser (including all of its error cases), the
 configuration validation, the transfer profiles, real TCP relaying in both
 directions, large transfers, half-close, chat broadcasting, port allocation and
-rollback, authorization, the typed C# API, and both timeouts - the latter driven
-by a `FakeTimeProvider` instead of a sleeping test.
+rollback, authorization, the typed C# API, embedding the library without any
+framework at all, and both timeouts - the latter driven by a `FakeTimeProvider`
+instead of a sleeping test.
 
 ## License
 
