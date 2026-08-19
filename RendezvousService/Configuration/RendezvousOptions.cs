@@ -25,43 +25,6 @@ namespace org.GraphDefined.Vanaheimr.Rendezvous
 {
 
     /// <summary>
-    /// The transfer profile settings of the rendezvous service.
-    /// </summary>
-    public sealed class TransferProfilesOptions
-    {
-
-        /// <summary>
-        /// The settings used for rendezvous without an explicit transfer profile.
-        /// </summary>
-        public TransferProfileSettings  Balanced       { get; set; } = TransferProfileSettings.Defaults(TransferProfile.Balanced);
-
-        /// <summary>
-        /// The settings used for low latency rendezvous, e.g. chat or SSH.
-        /// </summary>
-        public TransferProfileSettings  Interactive    { get; set; } = TransferProfileSettings.Defaults(TransferProfile.Interactive);
-
-        /// <summary>
-        /// The settings used for high throughput rendezvous, e.g. file transfers.
-        /// </summary>
-        public TransferProfileSettings  Bulk           { get; set; } = TransferProfileSettings.Defaults(TransferProfile.Bulk);
-
-
-        /// <summary>
-        /// Return the settings of the given transfer profile.
-        /// </summary>
-        /// <param name="Profile">A transfer profile.</param>
-        public TransferProfileSettings this[TransferProfile Profile]
-
-            => Profile switch {
-                   TransferProfile.Interactive  => Interactive,
-                   TransferProfile.Bulk         => Bulk,
-                   _                            => Balanced
-               };
-
-    }
-
-
-    /// <summary>
     /// The configuration of the rendezvous service.
     /// </summary>
     public sealed class RendezvousOptions

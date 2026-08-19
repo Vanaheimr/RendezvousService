@@ -19,24 +19,6 @@ namespace org.GraphDefined.Vanaheimr.Rendezvous
 {
 
     /// <summary>
-    /// A parser error, including the response code it will be reported as.
-    /// </summary>
-    /// <param name="Code">The response code of this error.</param>
-    /// <param name="Message">A human readable error message.</param>
-    public readonly record struct CommandError(ResponseCode  Code,
-                                               String        Message)
-    {
-
-        /// <summary>
-        /// Return a text representation of this error.
-        /// </summary>
-        public override String ToString()
-            => $"{Code}: {Message}";
-
-    }
-
-
-    /// <summary>
     /// The response of a control command.
     ///
     /// On the wire a response is a single UTF-8 line, terminated by CR LF:

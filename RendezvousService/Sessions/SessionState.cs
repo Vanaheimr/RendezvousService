@@ -43,43 +43,4 @@ namespace org.GraphDefined.Vanaheimr.Rendezvous
 
     }
 
-
-    /// <summary>
-    /// Why a rendezvous was closed.
-    /// </summary>
-    public enum SessionCloseReason
-    {
-
-        /// <summary>
-        /// The clients disconnected.
-        /// </summary>
-        ClientDisconnected,
-
-        /// <summary>
-        /// Not all clients did arrive before the rendezvous timeout elapsed.
-        /// </summary>
-        RendezvousTimeout,
-
-        /// <summary>
-        /// No payload was relayed before the idle timeout elapsed.
-        /// </summary>
-        IdleTimeout,
-
-        /// <summary>
-        /// An authorized DisconnectPorts command was received.
-        /// </summary>
-        DisconnectRequested,
-
-        /// <summary>
-        /// The service is shutting down.
-        /// </summary>
-        ServiceShutdown,
-
-        /// <summary>
-        /// An unexpected error occurred.
-        /// </summary>
-        Error
-
-    }
-
 }
