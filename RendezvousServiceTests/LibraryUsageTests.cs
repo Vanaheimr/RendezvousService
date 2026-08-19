@@ -17,6 +17,8 @@
 
 #region Usings
 
+using System.Text;
+
 using Microsoft.Extensions.Time.Testing;
 
 #endregion
@@ -26,8 +28,9 @@ namespace org.GraphDefined.Vanaheimr.Rendezvous.Tests
 
     /// <summary>
     /// Tests for using the library on its own: no hosting, no dependency
-    /// injection, no configuration binder and no control endpoint - just
-    /// "new RendezvousManager(...)" and a few method calls.
+    /// injection and no configuration binder - just "new RendezvousManager(...)"
+    /// and a few method calls. Even the control endpoint is an ordinary object
+    /// that can be instantiated wherever it is needed.
     /// </summary>
     [TestFixture]
     public class LibraryUsageTests
@@ -101,6 +104,51 @@ namespace org.GraphDefined.Vanaheimr.Rendezvous.Tests
                             );
 
             Assert.That(exception!.Message, Does.Contain("DataAddress"));
+
+        }
+
+        [Test]
+        public async Task TheControlEndpointIsAnOrdinaryObjectToo()
+        {
+
+            var configuration = new RendezvousOptions {
+                                    ControlAddress  = "127.0.0.1",
+                                    ControlPort     = 0,          // pick a free port
+                                    DataAddress     = "127.0.0.1"
+                                };
+
+            // The whole service, without a host and without dependency injection.
+            await using var manager  = new RendezvousManager(configuration);
+            await using var control  = new ControlServer(manager, configuration);
+
+            control.Start();
+
+            Assert.Multiple(() => {
+                Assert.That(control.IsRunning,            Is.True);
+                Assert.That(control.LocalEndPoint,        Is.Not.Null);
+                Assert.That(control.LocalEndPoint!.Port,  Is.GreaterThan(0), "The bound port is known right after Start().");
+            });
+
+            #region Speak the control protocol
+
+            using var client = await TestNet.ConnectAsync((UInt16) control.LocalEndPoint!.Port);
+
+            await TestNet.SendAsync(client, "ConnectPorts([?,?], s3cret, chat)\r\n");
+
+            using var reader   = new StreamReader(client.GetStream(), Encoding.UTF8);
+            var       response = await reader.ReadLineAsync().WaitAsync(TestNet.Timeout);
+
+            Assert.Multiple(() => {
+                Assert.That(response,              Does.StartWith("OK ConnectPorts(["));
+                Assert.That(manager.Count,         Is.EqualTo(1));
+                Assert.That(control.OpenConnections, Is.EqualTo(1));
+            });
+
+            #endregion
+
+            await control.StopAsync();
+
+            Assert.That(control.IsRunning, Is.False);
 
         }
 

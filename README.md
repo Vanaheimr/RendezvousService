@@ -9,8 +9,8 @@ It comes in two parts:
 
 | | |
 |---|---|
-| **`Rendezvous`** | The library. Everything needed to open, relay and close rendezvous, usable from any application. Its only dependency is `Microsoft.Extensions.Logging.Abstractions` - no hosting, no dependency injection, no configuration binder. |
-| **`RendezvousService`** | The application: the TCP control endpoint, the generic host and the configuration binding. |
+| **`Rendezvous`** | The library: everything needed to open, relay and close rendezvous, *including* the TCP control endpoint. Its only dependency is `Microsoft.Extensions.Logging.Abstractions` - no hosting, no dependency injection, no configuration binder. |
+| **`RendezvousService`** | The application: the generic host, the configuration binding, and about ten lines tying the control endpoint into the host life cycle. |
 
 So the whole service is one way to use the library, not the only one - see
 [The C# API](#the-c-api) below.
@@ -131,6 +131,38 @@ builder.Services.AddSingleton(serviceProvider => new RendezvousManager(
 
 Note that the typed API bypasses the parser, therefore the manager validates the
 request itself as well: at least two ports, no duplicates, no empty secret.
+
+### The control endpoint without a host
+
+The control endpoint is a plain object as well, so the complete service fits into
+three lines - no host, no dependency injection:
+
+```csharp
+await using var manager  = new RendezvousManager(configuration);
+await using var control  = new ControlServer(manager, configuration);
+
+control.Start();                              // binds, so LocalEndPoint is known right away
+...
+await control.StopAsync();                    // stops accepting, waits for open connections
+```
+
+Within a generic host this is all the framework binding it takes - and note that
+this is an `IHostedService`, not a `BackgroundService`: the base class would only
+add bookkeeping for a loop that the control endpoint already manages itself.
+
+```csharp
+public sealed class ControlServerService(RendezvousManager Manager,
+                                         IOptions<RendezvousOptions> Options,
+                                         ILoggerFactory LoggerFactory) : IHostedService
+{
+
+    private readonly ControlServer controlServer = new (Manager, Options.Value, LoggerFactory);
+
+    public Task StartAsync(CancellationToken token) { controlServer.Start(); return Task.CompletedTask; }
+    public Task StopAsync (CancellationToken token) => controlServer.StopAsync().WaitAsync(token);
+
+}
+```
 
 ### Who enforces the timeouts?
 
@@ -260,18 +292,20 @@ Rendezvous/                 the library, namespace org.GraphDefined.Vanaheimr.Re
   Protocol/                 the command parser, commands and responses
   Sessions/                 RendezvousManager, RendezvousSession, SessionEndpoint, SessionJanitor
   Relay/                    PipeRelay (two clients), BroadcastRelay (chat), pooled chunks
+  Control/                  ControlServer and ControlConnection
 
 RendezvousService/          the application, namespace ...Rendezvous.Service
-  Control/                  ControlServer and ControlConnection
+  Hosting/                  ControlServerService (IHostedService, ten lines)
   Configuration/            RendezvousOptionsValidator (IValidateOptions)
   Program.cs                the generic host
 
 RendezvousServiceTests/
 ```
 
-Everything that binds to a framework - `BackgroundService`, `IOptions`,
+Everything that binds to a framework - `IHostedService`, `IOptions`,
 `IValidateOptions`, the configuration binder - lives in the application. The
-library sees none of it.
+library sees none of it, and every one of its long running parts offers a plain
+`Start()` / `StopAsync()` pair instead.
 
 One type per file, named after that type. The only exception is
 `TransferProfileExtensions`, which stays with the enum it parses and formats.
@@ -282,7 +316,7 @@ One type per file, named after that type. The only exception is
 dotnet test
 ```
 
-142 NUnit tests: the command parser (including all of its error cases), the
+143 NUnit tests: the command parser (including all of its error cases), the
 configuration validation, the transfer profiles, real TCP relaying in both
 directions, large transfers, half-close, chat broadcasting, port allocation and
 rollback, authorization, the typed C# API, embedding the library without any

@@ -67,7 +67,7 @@ builder.Services.AddSingleton(serviceProvider => new RendezvousManager(
                                                      serviceProvider.GetRequiredService<ILoggerFactory>()
                                                  ));
 
-builder.Services.AddHostedService<ControlServer>();
+builder.Services.AddHostedService<ControlServerService>();
 
 #endregion
 

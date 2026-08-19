@@ -21,44 +21,56 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Logging.Abstractions;
 
 #endregion
 
-namespace org.GraphDefined.Vanaheimr.Rendezvous.Service
+namespace org.GraphDefined.Vanaheimr.Rendezvous
 {
 
     /// <summary>
     /// The control endpoint of the rendezvous service: a TCP listener accepting
     /// UTF-8 commands, one command per line.
+    ///
+    /// This is a plain object with Start() and StopAsync(), not a hosted service.
+    /// Whoever wants it within a generic host wraps it into an IHostedService of
+    /// ten lines - the other way around a library would force a hosting framework
+    /// onto everybody who just wants a control endpoint.
     /// </summary>
-    public sealed class ControlServer : BackgroundService
+    public sealed class ControlServer : IAsyncDisposable
     {
 
         #region Data
 
-        private readonly RendezvousManager               manager;
-        private readonly RendezvousOptions               options;
-        private readonly ILoggerFactory                  loggerFactory;
-        private readonly ILogger<ControlServer>          logger;
-        private readonly ConcurrentDictionary<Int64, Task>  connections = [];
+        private readonly RendezvousManager                   manager;
+        private readonly RendezvousOptions                   options;
+        private readonly ILoggerFactory                      loggerFactory;
+        private readonly ILogger<ControlServer>              logger;
+        private readonly ConcurrentDictionary<Int64, Task>   connections   = [];
+        private readonly CancellationTokenSource             stopSource    = new();
 
-        private          TcpListener?                    listener;
-        private          Int32                           connectionCount;
-        private          Int64                           connectionCounter;
+        private          TcpListener?                        listener;
+        private          Task?                               acceptTask;
+        private          Int32                               connectionCount;
+        private          Int64                               connectionCounter;
 
         #endregion
 
         #region Properties
 
         /// <summary>
-        /// The TCP socket the control endpoint is listening on.
-        /// Only available after the service was started.
+        /// The TCP socket this control endpoint is listening on.
+        /// Only available after <see cref="Start"/> was called.
         /// </summary>
         public IPEndPoint? LocalEndPoint
             => listener?.LocalEndpoint as IPEndPoint;
+
+        /// <summary>
+        /// Whether this control endpoint is accepting connections.
+        /// </summary>
+        public Boolean IsRunning
+            => acceptTask is not null && !stopSource.IsCancellationRequested;
 
         /// <summary>
         /// The number of currently open control connections.
@@ -73,33 +85,39 @@ namespace org.GraphDefined.Vanaheimr.Rendezvous.Service
         /// <summary>
         /// Create a new control endpoint.
         /// </summary>
-        /// <param name="Manager">The rendezvous manager.</param>
-        /// <param name="Options">The configuration of the rendezvous service.</param>
-        /// <param name="LoggerFactory">A logger factory.</param>
-        public ControlServer(RendezvousManager            Manager,
-                             IOptions<RendezvousOptions>  Options,
-                             ILoggerFactory               LoggerFactory)
+        /// <param name="Manager">The rendezvous manager to control.</param>
+        /// <param name="Options">An optional configuration, defaults are used otherwise.</param>
+        /// <param name="LoggerFactory">An optional logger factory.</param>
+        public ControlServer(RendezvousManager   Manager,
+                             RendezvousOptions?  Options         = null,
+                             ILoggerFactory?     LoggerFactory   = null)
         {
 
+            ArgumentNullException.ThrowIfNull(Manager);
+
             this.manager        = Manager;
-            this.options        = Options.Value;
-            this.loggerFactory  = LoggerFactory;
-            this.logger         = LoggerFactory.CreateLogger<ControlServer>();
+            this.options        = Options        ?? new RendezvousOptions();
+            this.loggerFactory  = LoggerFactory  ?? NullLoggerFactory.Instance;
+            this.logger         = this.loggerFactory.CreateLogger<ControlServer>();
 
         }
 
         #endregion
 
 
-        #region StartAsync(CancellationToken)
+        #region Start()
 
         /// <summary>
-        /// Bind the control endpoint, so that its TCP port is reserved
-        /// (and known) as soon as this service was started.
+        /// Bind the control endpoint and start accepting connections.
+        /// The TCP port is bound synchronously, so that <see cref="LocalEndPoint"/>
+        /// is known - and a port conflict is reported - as soon as this returns.
         /// </summary>
-        /// <param name="CancellationToken">A token to cancel starting.</param>
-        public override Task StartAsync(CancellationToken CancellationToken)
+        /// <exception cref="SocketException">When the TCP port could not be bound.</exception>
+        public void Start()
         {
+
+            if (acceptTask is not null)
+                return;
 
             var tcpListener = new TcpListener(options.ControlIPAddress,
                                               options.ControlPort);
@@ -110,35 +128,80 @@ namespace org.GraphDefined.Vanaheimr.Rendezvous.Service
 
             tcpListener.Start();
 
-            listener = tcpListener;
+            listener    = tcpListener;
+            acceptTask  = AcceptLoopAsync(tcpListener, stopSource.Token);
 
             logger.LogInformation("The rendezvous control endpoint is listening on {LocalEndPoint}.", LocalEndPoint);
-
-            return base.StartAsync(CancellationToken);
 
         }
 
         #endregion
 
-        #region ExecuteAsync(StoppingToken)
+        #region StopAsync()
 
         /// <summary>
-        /// Accept control connections until the service is stopped.
+        /// Stop accepting new connections and wait for the open ones.
         /// </summary>
-        /// <param name="StoppingToken">A token to stop this background service.</param>
-        protected override async Task ExecuteAsync(CancellationToken StoppingToken)
+        public async Task StopAsync()
         {
 
-            var tcpListener = listener ?? throw new InvalidOperationException("The control endpoint was not started!");
+            if (acceptTask is null)
+                return;
 
-            while (!StoppingToken.IsCancellationRequested)
+            listener?.Stop();
+
+            try
+            {
+                await stopSource.CancelAsync().ConfigureAwait(false);
+            }
+            catch (ObjectDisposedException)
+            { }
+
+            try
+            {
+                await acceptTask.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            { }
+
+            try
+            {
+                await Task.WhenAll(connections.Values).ConfigureAwait(false);
+            }
+            catch (Exception e)
+            {
+                logger.LogDebug(e, "A control connection did not shut down cleanly.");
+            }
+
+            listener?.Dispose();
+
+            logger.LogInformation("The rendezvous control endpoint was stopped.");
+
+        }
+
+        #endregion
+
+
+        #region (private) AcceptLoopAsync(Listener, CancellationToken)
+
+        /// <summary>
+        /// Accept control connections until this control endpoint is stopped.
+        /// </summary>
+        private async Task AcceptLoopAsync(TcpListener        Listener,
+                                           CancellationToken  CancellationToken)
+        {
+
+            // Do not run the accept loop within Start().
+            await Task.Yield();
+
+            while (!CancellationToken.IsCancellationRequested)
             {
 
                 Socket socket;
 
                 try
                 {
-                    socket = await tcpListener.AcceptSocketAsync(StoppingToken).ConfigureAwait(false);
+                    socket = await Listener.AcceptSocketAsync(CancellationToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
@@ -151,7 +214,7 @@ namespace org.GraphDefined.Vanaheimr.Rendezvous.Service
                 catch (SocketException e)
                 {
 
-                    if (!StoppingToken.IsCancellationRequested)
+                    if (!CancellationToken.IsCancellationRequested)
                         logger.LogError("The control endpoint stopped accepting connections ({SocketError})!", e.SocketErrorCode);
 
                     break;
@@ -179,46 +242,13 @@ namespace org.GraphDefined.Vanaheimr.Rendezvous.Service
 
                 var connectionId = Interlocked.Increment(ref connectionCounter);
 
-                connections[connectionId] = HandleConnectionAsync(connectionId, socket, StoppingToken);
+                connections[connectionId] = HandleConnectionAsync(connectionId, socket, CancellationToken);
 
             }
 
         }
 
         #endregion
-
-        #region StopAsync(CancellationToken)
-
-        /// <summary>
-        /// Stop accepting new control connections and wait for the open ones.
-        /// </summary>
-        /// <param name="CancellationToken">A token to cancel stopping.</param>
-        public override async Task StopAsync(CancellationToken CancellationToken)
-        {
-
-            listener?.Stop();
-
-            await base.StopAsync(CancellationToken).ConfigureAwait(false);
-
-            try
-            {
-                await Task.WhenAll(connections.Values).WaitAsync(CancellationToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            { }
-            catch (Exception e)
-            {
-                logger.LogDebug(e, "A control connection did not shut down cleanly.");
-            }
-
-            listener?.Dispose();
-
-            logger.LogInformation("The rendezvous control endpoint was stopped.");
-
-        }
-
-        #endregion
-
 
         #region (private) HandleConnectionAsync(ConnectionId, Socket, CancellationToken)
 
@@ -257,6 +287,23 @@ namespace org.GraphDefined.Vanaheimr.Rendezvous.Service
                 connections.TryRemove(ConnectionId, out _);
 
             }
+
+        }
+
+        #endregion
+
+
+        #region DisposeAsync()
+
+        /// <summary>
+        /// Stop this control endpoint.
+        /// </summary>
+        public async ValueTask DisposeAsync()
+        {
+
+            await StopAsync().ConfigureAwait(false);
+
+            stopSource.Dispose();
 
         }
 

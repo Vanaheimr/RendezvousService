@@ -70,15 +70,14 @@ namespace org.GraphDefined.Vanaheimr.Rendezvous.Tests
 
                 Configure?.Invoke(configuration);
 
-                // The library takes the configuration as it is, the application
-                // wraps it into IOptions for its own dependency injection.
+                // No hosting, no dependency injection: the control endpoint is
+                // an ordinary object of the library.
                 var manager  = new RendezvousManager(configuration, TimeProvider.System, NullLoggerFactory.Instance);
+                var server   = new ControlServer   (manager, configuration, NullLoggerFactory.Instance);
 
-                var server   = new ControlServer(manager,
-                                                 Microsoft.Extensions.Options.Options.Create(configuration),
-                                                 NullLoggerFactory.Instance);
+                server.Start();
 
-                await server.StartAsync(CancellationToken.None);
+                await Task.CompletedTask;
 
                 return new ControlTestHost(manager, server);
 
@@ -87,8 +86,7 @@ namespace org.GraphDefined.Vanaheimr.Rendezvous.Tests
             public async ValueTask DisposeAsync()
             {
 
-                await Server.StopAsync(CancellationToken.None).WaitAsync(TestNet.Timeout);
-                Server.Dispose();
+                await Server.DisposeAsync().AsTask().WaitAsync(TestNet.Timeout);
 
                 await Manager.DisposeAsync();
 

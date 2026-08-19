@@ -27,10 +27,9 @@ namespace org.GraphDefined.Vanaheimr.Rendezvous
 {
 
     /// <summary>
-    /// Socket extension methods of the rendezvous service, also useful for
-    /// applications building their own front end on top of this library.
+    /// Socket extension methods of the rendezvous service.
     /// </summary>
-    public static class SocketExtensions
+    internal static class SocketExtensions
     {
 
         #region ApplyProfile(this Socket, Settings, Logger)
