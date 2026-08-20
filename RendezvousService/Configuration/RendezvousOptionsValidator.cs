@@ -19,6 +19,8 @@
 
 using Microsoft.Extensions.Options;
 
+using org.GraphDefined.Vanaheimr.Hermod.Rendezvous;
+
 #endregion
 
 namespace org.GraphDefined.Vanaheimr.Rendezvous.Service

@@ -17,11 +17,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <InternalsVisibleTo Include="org.GraphDefined.Vanaheimr.Rendezvous.Tests" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <ProjectReference Include="..\Rendezvous\Rendezvous.csproj" />
+    <ProjectReference Include="..\libs\Hermod\Hermod\Hermod.csproj" />
+    <ProjectReference Include="..\libs\Styx\Styx\Styx.csproj" />
   </ItemGroup>
 
   <ItemGroup>

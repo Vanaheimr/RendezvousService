@@ -21,6 +21,8 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
+using org.GraphDefined.Vanaheimr.Hermod.Rendezvous;
+
 #endregion
 
 namespace org.GraphDefined.Vanaheimr.Rendezvous.Service
@@ -67,9 +69,41 @@ namespace org.GraphDefined.Vanaheimr.Rendezvous.Service
                                     ILoggerFactory               LoggerFactory)
         {
 
+            var options  = Options.Value;
+            var logger   = LoggerFactory.CreateLogger<ControlServerService>();
+            var keyRing  = new ControlKeyRing();
+
+            #region Every configured public key may authorize control commands
+
+            foreach (var keyOptions in options.ControlKeys)
+            {
+
+                if (keyOptions.TryToControlKey(out var key, out var errorResponse))
+                {
+                    keyRing.Add(key);
+                    logger.LogInformation("Trusting the control key {Key}.", key);
+                }
+
+                // The configuration was validated during startup, so this can
+                // only happen when a key was added to a running service.
+                else
+                    logger.LogError("Ignoring an invalid control key: {Error}", errorResponse);
+
+            }
+
+            if (keyRing.Count == 0)
+                logger.LogWarning(
+                    "No control keys are configured: the control endpoint will reject every command! " +
+                    "Add them to {Section}.{Property}.",
+                    RendezvousOptions.SectionName, nameof(RendezvousOptions.ControlKeys)
+                );
+
+            #endregion
+
             controlServer = new ControlServer(Manager,
-                                              Options.Value,
-                                              LoggerFactory);
+                                              options,
+                                              LoggerFactory,
+                                              Keys: keyRing);
 
         }
 

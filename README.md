@@ -9,8 +9,8 @@ It comes in two parts:
 
 | | |
 |---|---|
-| **`Rendezvous`** | The library: everything needed to open, relay and close rendezvous, *including* the TCP control endpoint. Its only dependency is `Microsoft.Extensions.Logging.Abstractions` - no hosting, no dependency injection, no configuration binder. |
-| **`RendezvousService`** | The application: the generic host, the configuration binding, and about ten lines tying the control endpoint into the host life cycle. |
+| **`Hermod/Rendezvous`** | The library, within the [Hermod](https://github.com/Vanaheimr/Hermod) submodule: everything needed to open, relay and close rendezvous, *including* the TCP control endpoint. No hosting, no dependency injection, no configuration binder. |
+| **`RendezvousService`** | This repository: the generic host, the configuration binding, and about ten lines tying the control endpoint into the host life cycle. |
 
 So the whole service is one way to use the library, not the only one - see
 [The C# API](#the-c-api) below.
@@ -20,70 +20,235 @@ and pooled buffers.
 
 ## The control protocol
 
-The control endpoint listens on `127.0.0.1:8500` by default and speaks a line based
-UTF-8 protocol: one command per line (`LF` or `CR LF`), one response line per command
-(always terminated by `CR LF`). A control connection may carry any number of commands.
+The control endpoint listens on `127.0.0.1:8500` by default and speaks **signed
+CBOR** ([RFC 8949](https://www.rfc-editor.org/rfc/rfc8949)). Its TCP port is open
+to whoever can reach it, therefore a valid signature - not the network - is what
+separates an operator from an attacker.
 
-### ConnectPorts
-
-```
-ConnectPorts([20000, 30000], secret)              open TCP/20000 and TCP/30000
-ConnectPorts([?, 30000],     secret)              let the service pick the first port
-ConnectPorts([20000, ?],     secret)              let the service pick the second port
-ConnectPorts([?, ?],         secret)              let the service pick both ports
-ConnectPorts([?, ?, ?],      secret)              three ports: a chat
-ConnectPorts([?, ?],         secret, Interactive) with an explicit transfer profile
-```
-
-The response echoes the effective ports and transfer profile:
+Every message, in both directions, is one length prefixed frame:
 
 ```
-OK ConnectPorts([49312, 49313], Balanced)
++------------+---------------------------------+
+|   length   |      CBOR signed message        |
+|  4 byte BE |          length bytes           |
++------------+---------------------------------+
 ```
 
-### DisconnectPorts
+CBOR is self-delimiting, but an explicit length lets the service reject an absurd
+message before decoding a single byte of it.
 
-Closes a rendezvous and removes its listeners. All given ports must belong to the
-same rendezvous, one of them is enough to identify it. The secret must match the
-secret of the `ConnectPorts` command.
+### The envelope
 
-```
-DisconnectPorts(20000, 30000, secret)
-DisconnectPorts([20000, 30000], secret)
-DisconnectPorts(20000, secret)
+```cddl
+message = {
+    1: bstr,          ; the payload, signed exactly as these bytes
+    2: [+ signature]  ; one or more signatures
+}
 
-OK DisconnectPorts([20000, 30000])
-```
-
-### Errors
-
-```
-ERROR <Code> <a human readable message>
-
-ERROR InvalidSyntax    Invalid TCP port '70000', expected a number between 1 and 65535 or '?'!
-ERROR PortInUse        TCP port 20000 is already used by another rendezvous!
-ERROR PortNotAllowed   TCP port 20 is not within the allowed port range 1024 - 65535!
-ERROR Unauthorized     The given secret does not authorize this command!
-ERROR UnknownSession   There is no rendezvous on TCP port 20000!
-ERROR TooManySessions  The service is already running 256 rendezvous!
-ERROR TooManyPorts     A rendezvous must not have more than 16 ports!
-ERROR CommandTooLong   A command must not be longer than 4096 bytes!
-ERROR UnknownCommand   Unknown command 'Frobnicate', expected 'ConnectPorts' or 'DisconnectPorts'!
+signature = {
+    1: tstr,          ; the identification of the signing key
+    2: int,           ; the COSE algorithm: -8 EdDSA, -48/-49/-50 ML-DSA-44/65/87
+    3: bstr           ; the signature
+}
 ```
 
-### The secret
+The payload travels as a byte string, exactly as within COSE: the signature covers
+the bytes that arrived, so no re-encoding of the parsed structure can ever change
+what was verified. Payloads are written in the *deterministic* encoding of RFC 8949
+§4.2.1, so an independent implementation can reproduce them byte for byte.
 
-Any non-empty string of up to 256 characters without whitespace and without
-`( ) [ ] ,`. It is stored as a SHA-256 hash and compared in constant time, so
-neither a memory dump nor the response time of the service reveal it.
+### The request payload
 
-The secret authorizes `DisconnectPorts` only - it is not a transport credential.
-Anyone who can reach a rendezvous port can connect to it, so keep the control
-endpoint on an interface you trust.
+```cddl
+request = {
+    1: tstr,          ; "ConnectPorts" | "DisconnectPorts"
+    2: [+ port],      ; port = uint / null       (null = '?', pick a free one)
+  ? 3: tstr,          ; a description, e.g. "SSH rendezvous for maintenance work"
+  ? 4: tstr,          ; the transfer profile
+    5: bstr,          ; nonce, 8..64 bytes
+    6: uint           ; seconds since the Unix epoch
+}
+```
+
+The nonce and the timestamp are what make a captured request useless: the service
+only accepts a timestamp within `MaxClockSkew` (5 minutes by default) and refuses
+a nonce it has already seen within that window. A signature proves *who* sent a
+request, never that it is fresh.
+
+The description is plain metadata - up to 256 characters saying what a rendezvous
+is for. It authorizes nothing; that is what the signatures are for.
+
+### The response payload
+
+```cddl
+response = {
+    1: int,           ; the response code, 0 = OK
+    2: tstr,          ; a human readable message
+  ? 3: [* uint],      ; the TCP ports of the rendezvous
+  ? 4: tstr,          ; the effective transfer profile
+  ? 5: bstr,          ; the nonce of the request this answers
+    6: uint,          ; seconds since the Unix epoch
+  ? 7: tstr,          ; the description of the rendezvous
+  ? 8: uint,          ; when the rendezvous was opened
+  ? 9: [* tstr]       ; the keys that opened the rendezvous
+}
+```
+
+Responses are signed as well, with the same envelope, so a client can tell a real
+answer from an injected one. The nonce of the request is echoed, which binds a
+response to exactly one request.
+
+Keys 7 to 9 report back what the service recorded about a rendezvous: what it is
+for, when it was opened and who owns it.
+
+Response codes: `OK`, `InvalidSyntax`, `Unauthorized`, `PortInUse`, `PortNotAllowed`,
+`UnknownSession`, `TooManySessions`, `TooManyPorts`, `CommandTooLong`, `UnknownCommand`,
+`InternalError`.
+
+## Keys and signatures
+
+Two signature families, and nothing else:
+
+| | key | signature | |
+|---|---|---|---|
+| **Ed25519** | 32 B | 64 B | classical, ~128 bit |
+| **Ed448** | 57 B | 114 B | classical, ~224 bit |
+| **ML-DSA-44** | 1312 B | 2420 B | post-quantum, NIST level 2 |
+| **ML-DSA-65** | 1952 B | 3309 B | post-quantum, NIST level 3 |
+| **ML-DSA-87** | 2592 B | 4627 B | post-quantum, NIST level 5 |
+
+EdDSA comes from BouncyCastle and is therefore always available; ML-DSA (FIPS 204)
+is the native `System.Security.Cryptography.MLDsa` of .NET 10 and needs platform
+support - check `ControlKey.IsMLDsaSupported`. Note the sizes: a single ML-DSA-87
+signature is larger than the 4 KByte a line based protocol would ever have needed,
+which is why `MaxFrameLength` defaults to 64 KByte.
+
+Set `RequiredSignatures = 2` for the usual hybrid stance during the post-quantum
+migration: one Ed25519 or Ed448 signature *and* one ML-DSA signature, so that a
+break of either family alone authorizes nothing. Two signatures of the *same* key
+still count as one - a key is trusted or it is not.
+
+### Who may close a rendezvous
+
+A signature answers *"may you talk to this service at all"*. It does not answer
+*"is this rendezvous yours"* - and with several operators sharing one service,
+those are different questions. So a rendezvous belongs to the keys that opened it:
+
+* `ConnectPorts` records the identifications of the keys that signed the request.
+* `DisconnectPorts` is only accepted from one of those keys.
+* A key marked `IsAdministrator` may close every rendezvous - for the operator who
+  has to clean up after a colleague who is not around. Give it to as few keys as
+  possible.
+* A caller *within the same process* holds the manager anyway and may do
+  everything. `ControlAuthorization.TrustedAs("backup-job")` lets it name itself,
+  so its rendezvous also record who opened them.
+
+Revoking a key therefore also revokes its power over its own rendezvous, with
+immediate effect - which a shared secret could never offer.
+
+Every rendezvous records what a shared secret never could: `CreatedUtc` (when),
+`CreatedBy` (which keys) and `Description` (what for). The same three go for every
+control key: `Created`, `CreatedBy` and `Description`.
+
+### Managing keys
+
+Keys can be added and removed while the endpoint is serving requests; a compromised
+key has to be revocable without a restart.
+
+```csharp
+// Generate an operator key and trust its public half
+using var operatorKey = ControlSigner.GenerateEd25519("operator-1");
+
+controlServer.Keys.Add(
+    operatorKey.ToControlKey(
+        NotBefore:    DateTimeOffset.UtcNow,
+        NotAfter:     DateTimeOffset.UtcNow.AddDays(90),
+        Description:  "The operator on duty",
+        CreatedBy:    "achim"
+    )
+);
+
+controlServer.Keys.Add(
+    rootKey.ToControlKey(
+        Description:      "Emergency clean-up",
+        IsAdministrator:  true               // may close every rendezvous
+    )
+);
+
+controlServer.Keys.AddMLDsa("operator-1-pq", mlDsaPublicKey, NotAfter: ...);
+
+controlServer.Keys.Remove("operator-1");        // revoked, effective immediately
+controlServer.Keys.RemoveExpired(DateTimeOffset.UtcNow);
+```
+
+`NotBefore` and `NotAfter` are checked against the arrival time of every single
+request, not once at startup.
+
+Within the application the same keys are configured in `appsettings.json` - public
+keys only, a private key has no business being in a configuration file:
+
+```json
+"ControlKeys": [
+  {
+    "Id":              "operator-1",
+    "KeyType":         "Ed25519",
+    "PublicKey":       "<base64 of the raw public key>",
+    "NotBefore":       "2026-01-01T00:00:00Z",
+    "NotAfter":        "2026-12-31T23:59:59Z",
+    "Description":     "The operator on duty",
+    "IsAdministrator": false,
+    "CreatedBy":       "achim"
+  }
+]
+```
+
+Without a single configured key the endpoint starts, says so loudly, and rejects
+every command.
+
+## The control client
+
+`RendezvousControlClient` takes a remote socket, one or more private keys and a
+port specification, sends the signed request and reports what came back:
+
+```csharp
+using var signer = ControlSigner.GenerateEd25519("operator-1");   // or load an existing key
+
+var serverKeys = new ControlKeyRing();
+serverKeys.Add(theServersResponseKey);            // so that responses are verified too
+
+using var client = new RendezvousControlClient(
+                       IPSocket.Parse("127.0.0.1:8500"),
+                       signer,
+                       serverKeys
+                   );
+
+var response = await client.ConnectPortsAsync(
+                         [PortSpecification.Random, PortSpecification.Fixed(IPPort.Parse(30000))],
+                         TransferProfile.Interactive,
+                         "SSH rendezvous for maintenance work"
+                     );
+
+if (response.IsSuccess)
+    Console.WriteLine($"Rendezvous on TCP/[{String.Join(", ", response.Ports)}], " +
+                      $"signed by {String.Join(", ", response.SignedBy.Select(key => key.Id))}, " +
+                      $"owned by {String.Join(", ", response.CreatedBy)}");
+else
+    Console.WriteLine(response.Message);
+
+await client.DisconnectPortsAsync([response.Ports[0]], "Maintenance is done");
+```
+
+Pass several signers to satisfy a `RequiredSignatures` of two or more. The result
+tells a rejected command (`HasResponse == true`, `Code == Unauthorized`) apart from
+a service that never answered (`HasResponse == false`, `Error` explains why) -
+those are very different things for whoever has to react to them.
+
+`DisconnectPortsAsync` only works on a rendezvous this client opened itself, unless
+one of its keys is an administrator key.
 
 ## The C# API
 
-The text protocol is a thin layer over the `RendezvousManager`, so an application
+The wire protocol is a thin layer over the `RendezvousManager`, so an application
 embedding the library builds and executes the commands directly - no control
 endpoint, no host, not even a configuration object:
 
@@ -92,9 +257,9 @@ await using var manager = new RendezvousManager();     // that is all it takes
 
 if (manager.TryConnectPorts(
         new ConnectPortsCommand(
-            [PortSpecification.Random, PortSpecification.Fixed(30000)],
-            "secret",
-            TransferProfile.Interactive     // optional
+            [PortSpecification.Random, PortSpecification.Fixed(IPPort.Parse(30000))],
+            TransferProfile.Interactive,          // optional
+            "SSH rendezvous for maintenance work" // optional
         ),
         out var session,
         out var response))
@@ -103,17 +268,44 @@ if (manager.TryConnectPorts(
     await session.Completion;               // ...until the rendezvous is closed
 }
 else
-    Console.WriteLine(response.ToProtocolLine());
+    Console.WriteLine(response.Text);
 ```
 
 `TryConnectPorts` and `TryDisconnectPorts` hand out the `RendezvousSession` itself,
 so the ports chosen for a `?` never have to be parsed out of the response text.
 `ConnectPorts`/`DisconnectPorts` return the protocol response only, and
-`Execute(String)` parses and executes a whole command line.
+`Execute(String)` parses and executes a whole command line:
 
-A rendezvous exposes `Ports`, `Profile`, `State`, `BytesRelayed`, `Completion` and
-`Close(reason)`; `manager.TryGetSessionByPort(port, out var session)` finds an open
-one. An unauthorized `TryDisconnectPorts` returns neither success nor the rendezvous.
+```
+ConnectPorts([20000, 30000])
+ConnectPorts([?, 30000],  "SSH rendezvous for maintenance work")
+ConnectPorts([?, ?],      Bulk)
+ConnectPorts([?, ?, ?],   "The Friday chat", Interactive)
+DisconnectPorts(20000, 30000)
+DisconnectPorts([20000],  "Maintenance is done")
+```
+
+A single unquoted argument after the ports is read as the transfer profile when it
+names one, and as the description otherwise; quote it to say "this is a description".
+
+A rendezvous exposes `Ports`, `Profile`, `State`, `BytesRelayed`, `CreatedUtc`,
+`CreatedBy`, `Description`, `Completion` and `Close(reason)`;
+`manager.TryGetSessionByPort(port, out var session)` finds an open one. An
+unauthorized `TryDisconnectPorts` returns neither success nor the rendezvous.
+
+Every method takes an optional `ControlAuthorization` saying who is asking. Without
+one the caller is trusted - it holds the manager anyway - and may open and close
+everything:
+
+```csharp
+manager.TryConnectPorts(command, ControlAuthorization.TrustedAs("backup-job"), out var s, out var r);
+manager.TryConnectPorts(command, new ControlAuthorization(theVerifiedKeys),    out var s, out var r);
+```
+
+The library speaks Hermod's own network types throughout: `IPPort` for TCP ports,
+`IIPAddress` for addresses and `IPSocket` for the local and remote ends of a
+connection. `IPPort` carries a `TypeConverter`, so it binds from `appsettings.json`
+like any primitive.
 
 The constructor takes an optional `RendezvousOptions`, `TimeProvider` and
 `ILoggerFactory` - a plain object, not an `IOptions<T>`, so the library does not
@@ -130,7 +322,7 @@ builder.Services.AddSingleton(serviceProvider => new RendezvousManager(
 ```
 
 Note that the typed API bypasses the parser, therefore the manager validates the
-request itself as well: at least two ports, no duplicates, no empty secret.
+request itself as well: at least two ports, no duplicates, no oversized description.
 
 ### The control endpoint without a host
 
@@ -256,10 +448,13 @@ Command line switches: `--control-address`, `--control-port`, `--data-address`,
 Everything else is configured in `appsettings.json` (section `Rendezvous`) or via
 `Rendezvous__*` environment variables.
 
-A quick manual test with two terminals and `telnet`/`netcat`:
+The control endpoint speaks signed CBOR, so it can not be driven from a shell -
+open the rendezvous with `RendezvousControlClient` (see [The control
+client](#the-control-client)). The *data* ports are plain TCP, so `telnet` and
+`netcat` are all it takes to meet on them:
 
 ```bash
-printf 'ConnectPorts([?,?], mySecret, chat)\r\n' | nc 127.0.0.1 8500
+nc 127.0.0.1 20000
 ```
 
 ## Configuration
@@ -278,7 +473,10 @@ printf 'ConnectPorts([?,?], mySecret, chat)\r\n' | nc 127.0.0.1 8500
 | `MaxSessions` | `256` | Maximum number of concurrent rendezvous |
 | `MaxPortsPerSession` | `16` | Maximum number of clients per rendezvous |
 | `MaxControlConnections` | `64` | Maximum number of concurrent control connections |
-| `MaxCommandLength` | `4096` | Maximum length of a single command in bytes |
+| `MaxFrameLength` | `65536` | Maximum length of one control message in bytes |
+| `RequiredSignatures` | `1` | How many distinct valid signatures a request needs |
+| `MaxClockSkew` | `00:05:00` | Accepted age of a request, and how long a nonce is remembered |
+| `ControlKeys` | empty | The public keys that may authorize commands |
 | `DefaultProfile` | `Balanced` | Transfer profile for commands without one |
 | `Profiles.*` | see above | Buffer sizes and TCP parameters per profile |
 
@@ -287,19 +485,22 @@ An invalid configuration fails the startup with a list of all problems.
 ## Source layout
 
 ```
-Rendezvous/                 the library, namespace org.GraphDefined.Vanaheimr.Rendezvous
-  Configuration/            RendezvousOptions, TransferProfile, TransferProfileSettings
-  Protocol/                 the command parser, commands and responses
-  Sessions/                 RendezvousManager, RendezvousSession, SessionEndpoint, SessionJanitor
-  Relay/                    PipeRelay (two clients), BroadcastRelay (chat), pooled chunks
-  Control/                  ControlServer and ControlConnection
+libs/Hermod/Hermod/Rendezvous/     the library (submodule)
+  Configuration/                   RendezvousOptions, TransferProfile, TransferProfileSettings
+  Protocol/                        the command parser, commands and responses
+  Sessions/                        RendezvousManager, RendezvousSession, SessionEndpoint, SessionJanitor
+  Relay/                           PipeRelay (two clients), BroadcastRelay (chat), pooled chunks
+  Security/                        ControlKey, ControlKeyRing, ControlSigner, ControlAuthorization, NonceCache
+  Control/                         ControlServer, ControlConnection, RendezvousControlClient
 
-RendezvousService/          the application, namespace ...Rendezvous.Service
-  Hosting/                  ControlServerService (IHostedService, ten lines)
-  Configuration/            RendezvousOptionsValidator (IValidateOptions)
-  Program.cs                the generic host
+libs/Hermod/HermodTests/Rendezvous/   its tests (submodule)
 
-RendezvousServiceTests/
+RendezvousService/                 the application, namespace ...Rendezvous.Service
+  Hosting/                         ControlServerService (IHostedService, ten lines)
+  Configuration/                   RendezvousOptionsValidator (IValidateOptions)
+  Program.cs                       the generic host
+
+RendezvousServiceTests/            tests for those two, nothing else
 ```
 
 Everything that binds to a framework - `IHostedService`, `IOptions`,
@@ -312,16 +513,32 @@ One type per file, named after that type. The only exception is
 
 ## Tests
 
+The tests live where the code they cover lives:
+
 ```bash
-dotnet test
+dotnet test libs/Hermod/HermodTests/HermodTests.csproj --filter "FullyQualifiedName~Hermod.Tests.Rendezvous"
+dotnet test RendezvousServiceTests/RendezvousServiceTests.csproj
 ```
 
-143 NUnit tests: the command parser (including all of its error cases), the
+157 NUnit tests for the library, 10 for the application (the hosted service, the
+options validator and the configuration binding - everything else it does is one
+Program.cs).
+
+The library tests cover the command parser (including all of its error cases), the
 configuration validation, the transfer profiles, real TCP relaying in both
 directions, large transfers, half-close, chat broadcasting, port allocation and
 rollback, authorization, the typed C# API, embedding the library without any
-framework at all, and both timeouts - the latter driven by a `FakeTimeProvider`
-instead of a sleeping test.
+framework at all, and both timeouts - the latter driven by Hermod's
+`FakeTimeProvider` instead of a sleeping test. Only the three tests asking
+whether the janitor loop really runs use the real clock, with timeouts in
+milliseconds, because a faked timer could not answer that question.
+
+The signed CBOR protocol has tests of its own, and they are written as attacks:
+an unknown key, a tampered payload behind a valid signature, an expired key, a key
+that is not valid yet, a key revoked mid-session, a replayed request, a stale one,
+one from the future, two signatures of the same key where two distinct ones are
+required, and a client that pins the wrong response key. Each of them must be
+rejected - and Ed25519, Ed448 and all three ML-DSA parameter sets must be accepted.
 
 ## License
 
