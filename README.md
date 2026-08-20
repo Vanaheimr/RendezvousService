@@ -66,7 +66,8 @@ request = {
   ? 3: tstr,          ; a description, e.g. "SSH rendezvous for maintenance work"
   ? 4: tstr,          ; the transfer profile
     5: bstr,          ; nonce, 8..64 bytes
-    6: uint           ; seconds since the Unix epoch
+    6: uint,          ; seconds since the Unix epoch
+  ? 7: bool           ; echo everything back to its sender
 }
 ```
 
@@ -90,7 +91,8 @@ response = {
     6: uint,          ; seconds since the Unix epoch
   ? 7: tstr,          ; the description of the rendezvous
   ? 8: uint,          ; when the rendezvous was opened
-  ? 9: [* tstr]       ; the keys that opened the rendezvous
+  ? 9: [* tstr],      ; the keys that opened the rendezvous
+ ? 10: bool           ; whether the rendezvous echoes to the sender
 }
 ```
 
@@ -98,8 +100,8 @@ Responses are signed as well, with the same envelope, so a client can tell a rea
 answer from an injected one. The nonce of the request is echoed, which binds a
 response to exactly one request.
 
-Keys 7 to 9 report back what the service recorded about a rendezvous: what it is
-for, when it was opened and who owns it.
+Keys 7 to 10 report back what the service recorded about a rendezvous: what it is
+for, when it was opened, who owns it and whether it echoes.
 
 Response codes: `OK`, `InvalidSyntax`, `Unauthorized`, `PortInUse`, `PortNotAllowed`,
 `UnknownSession`, `TooManySessions`, `TooManyPorts`, `CommandTooLong`, `UnknownCommand`,
@@ -225,7 +227,8 @@ using var client = new RendezvousControlClient(
 var response = await client.ConnectPortsAsync(
                          [PortSpecification.Random, PortSpecification.Fixed(IPPort.Parse(30000))],
                          TransferProfile.Interactive,
-                         "SSH rendezvous for maintenance work"
+                         "SSH rendezvous for maintenance work",
+                         EchoToSender: false
                      );
 
 if (response.IsSuccess)
@@ -280,16 +283,18 @@ so the ports chosen for a `?` never have to be parsed out of the response text.
 ConnectPorts([20000, 30000])
 ConnectPorts([?, 30000],  "SSH rendezvous for maintenance work")
 ConnectPorts([?, ?],      Bulk)
-ConnectPorts([?, ?, ?],   "The Friday chat", Interactive)
+ConnectPorts([?, ?, ?],   "The Friday chat", Interactive, Echo)
 DisconnectPorts(20000, 30000)
 DisconnectPorts([20000],  "Maintenance is done")
 ```
 
-A single unquoted argument after the ports is read as the transfer profile when it
-names one, and as the description otherwise; quote it to say "this is a description".
+The arguments after the port list may come in any order, and each of them at most
+once: an unquoted argument naming a transfer profile (`Balanced`, `Interactive`,
+`Bulk` and their aliases) or the echo flag (`Echo`, `NoEcho`) is that, everything
+else is the description. Quote it to say "this is a description".
 
 A rendezvous exposes `Ports`, `Profile`, `State`, `BytesRelayed`, `CreatedUtc`,
-`CreatedBy`, `Description`, `Completion` and `Close(reason)`;
+`CreatedBy`, `Description`, `EchoToSender`, `Completion` and `Close(reason)`;
 `manager.TryGetSessionByPort(port, out var session)` finds an open one. An
 unauthorized `TryDisconnectPorts` returns neither success nor the rendezvous.
 
@@ -433,6 +438,37 @@ Details worth knowing:
   queue, so one slow reader can not stall the whole chat; a client that exceeds
   its queue limits is disconnected.
 
+### The echo to the sender
+
+A sender never learns where its own bytes ended up within the conversation: the
+service decides how several senders interleave, and everybody else sees that
+merged stream - only the sender does not. `EchoToSender` closes that gap by
+sending everything back to its sender as well:
+
+```csharp
+new ConnectPortsCommand([...], TransferProfile.Interactive, "The Friday chat", EchoToSender: true)
+```
+
+```
+ConnectPorts([?,?,?], "The Friday chat", Interactive, Echo)
+```
+
+Then **every** client - the sender included - receives the very same byte stream,
+and the service is the one and only sequencer of the conversation. The fan-out of
+one chunk to all queues happens under a lock, so that a chunk reaches every queue
+before the next one reaches any of them; without that, two clients sending at the
+same time could reach the queues in a different order and every receiver would end
+up with its own version of the conversation.
+
+It is off by default, and two things are worth knowing before turning it on:
+
+* **A client that only writes and never reads is disconnected.** Everything it
+  sends comes back, fills its own outbound queue and eventually exceeds it. Without
+  the echo this can not happen, so a write-only client is fine there.
+* **Two clients with an echo lose the half-close propagation**, because they are
+  then relayed by the broadcast rather than by the pipe. That is the right trade:
+  whoever asks for an echo is having a conversation, not tunneling a protocol.
+
 ## Running
 
 ```bash
@@ -520,7 +556,7 @@ dotnet test libs/Hermod/HermodTests/HermodTests.csproj --filter "FullyQualifiedN
 dotnet test RendezvousServiceTests/RendezvousServiceTests.csproj
 ```
 
-157 NUnit tests for the library, 10 for the application (the hosted service, the
+190 NUnit tests for the library, 11 for the application (the hosted service, the
 options validator and the configuration binding - everything else it does is one
 Program.cs).
 
@@ -532,6 +568,11 @@ framework at all, and both timeouts - the latter driven by Hermod's
 `FakeTimeProvider` instead of a sleeping test. Only the three tests asking
 whether the janitor loop really runs use the real clock, with timeouts in
 milliseconds, because a faked timer could not answer that question.
+
+One of them is a genuine concurrency test: five clients, four of them talking at
+the same time with the echo turned on, and every one of the five has to end up
+with a byte-identical stream. Without the lock around the fan-out it fails
+reliably, and it names the reason - "the service is not the only sequencer".
 
 The signed CBOR protocol has tests of its own, and they are written as attacks:
 an unknown key, a tampered payload behind a valid signature, an expired key, a key
