@@ -176,7 +176,7 @@ namespace org.GraphDefined.Vanaheimr.RendezvousService.Tests
                                                                    NullLoggerFactory.Instance);
 
                 // The host must not come up believing everything is fine.
-                Assert.ThrowsAsync<SocketException>(
+                await Assert.ThrowsAsync<SocketException>(
                     async () => await ((IHostedService) service).StartAsync(CancellationToken.None)
                 );
 
