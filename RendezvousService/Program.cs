@@ -27,9 +27,20 @@ using org.GraphDefined.Vanaheimr.Rendezvous.Service;
 
 #endregion
 
-// Both steps live in their own types, so that the tests compose the very
+// The host looks for appsettings.json in its content root, and that is the
+// working directory unless told otherwise: a systemd unit without a
+// WorkingDirectory, or a 'dotnet run --project' from the repository, would
+// silently run on the defaults instead. The settings file is copied next to
+// the binary, so that is where the content root belongs.
+//
+// Both other steps live in their own types, so that the tests compose the very
 // same host: RendezvousCommandLine and RendezvousServiceCollectionExtensions.
-var builder  = Host.CreateApplicationBuilder(args);
+var builder  = Host.CreateApplicationBuilder(
+                   new HostApplicationBuilderSettings {
+                       Args             = args,
+                       ContentRootPath  = AppContext.BaseDirectory
+                   }
+               );
 
 builder.Configuration.AddRendezvousCommandLine(args);
 builder.Services.     AddRendezvousService    (builder.Configuration);
