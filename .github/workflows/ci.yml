@@ -33,11 +33,11 @@ jobs:
     # debian:13 container on an Ubuntu runner, the same container Hermod's gate
     # uses.
     #
-    # Both legs earn their place here. Two of the tests start the service as a
-    # process of its own and ask git about the tree it was built from, and both
-    # paths and processes are a platform's answer: a content root compared on a
-    # case-insensitive file system, a git that refuses a checkout owned by
-    # somebody else.
+    # Both legs earn their place here. Four of the tests start the service as a
+    # process of its own and one asks git about the tree it was built from, and
+    # paths, processes and sockets are each a platform's answer: a content root
+    # compared on a case-insensitive file system, a port taken by another
+    # process, a git that refuses a checkout owned by somebody else.
     #
     # Measured before this workflow first ran, on 2026-11-05: 22 of 22 on
     # Windows 11 with .NET 10.0.403, and 22 of 22 on Debian 13.7 (WSL) with

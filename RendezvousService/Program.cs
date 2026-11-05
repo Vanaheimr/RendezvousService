@@ -45,8 +45,13 @@ var builder  = Host.CreateApplicationBuilder(
 builder.Configuration.AddRendezvousCommandLine(args);
 builder.Services.     AddRendezvousService    (builder.Configuration);
 
-var host     = builder.Build();
-var logger   = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Rendezvous");
+// 'using' because the console logger writes from a queue of its own, on a
+// background thread: a process that ends on a bad configuration below must
+// flush it first, or the one line saying what was wrong can be lost. Disposing
+// the host is what flushes it. That is a race, and the logger usually wins it,
+// so no test can show this line missing - which is why it is written down.
+using var host = builder.Build();
+var logger     = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Rendezvous");
 
 #region Log what this was built from
 
@@ -57,9 +62,47 @@ logger.LogInformation("Built from {BuiltFrom}.",
 
 #endregion
 
-#region Log the effective configuration
+#region Read the configuration, or say what is wrong with it
 
-var options  = host.Services.GetRequiredService<IOptions<RendezvousOptions>>().Value;
+// The first read binds and validates, and either can fail on what an operator
+// wrote: a value the binder can not convert (a port of 70000) throws an
+// InvalidOperationException naming that one value, a value the validator
+// rejects throws an OptionsValidationException listing every problem at once.
+//
+// Both are a mistake in the configuration, not in the code, so they end the
+// process with one log line per problem and exit code 1, not with an unhandled
+// exception and a stack trace nobody needs. The try holds this one read and
+// nothing else, so that is all an InvalidOperationException here can be about.
+RendezvousOptions options;
+
+try
+{
+    options = host.Services.GetRequiredService<IOptions<RendezvousOptions>>().Value;
+}
+catch (OptionsValidationException e)
+{
+
+    foreach (var failure in e.Failures)
+        logger.LogCritical("Invalid configuration: {Problem}", failure);
+
+    return 1;
+
+}
+catch (InvalidOperationException e)
+{
+
+    logger.LogCritical("Invalid configuration: {Problem}",
+                       e.InnerException is null
+                           ? e.Message
+                           : $"{e.Message} {e.InnerException.Message}");
+
+    return 1;
+
+}
+
+#endregion
+
+#region Log the effective configuration
 
 logger.LogInformation("Rendezvous ports {MinDataPort} - {MaxDataPort} on {DataAddress}, " +
                       "rendezvous timeout {RendezvousTimeout}, idle timeout {IdleTimeout}, " +
@@ -73,4 +116,30 @@ logger.LogInformation("Rendezvous ports {MinDataPort} - {MaxDataPort} on {DataAd
 
 #endregion
 
-await host.RunAsync();
+#region Start, and run until stopped
+
+// What RunAsync does, in two steps, so that only the start is caught.
+//
+// A control port that is already taken fails the start of the hosted service.
+// The host has logged that already, with the exception and its stack trace
+// ("Hosting failed to start"); letting it escape as well would print the very
+// same stack trace a second time as an unhandled exception, and end the
+// process as a crash instead of with an exit code.
+//
+// Nothing after the start is caught: a failure while stopping or disposing is
+// a different kind of failure, and must stay an unhandled exception rather
+// than vanish behind an exit code.
+try
+{
+    await host.StartAsync();
+}
+catch (Exception)
+{
+    return 1;
+}
+
+await host.WaitForShutdownAsync();
+
+#endregion
+
+return 0;

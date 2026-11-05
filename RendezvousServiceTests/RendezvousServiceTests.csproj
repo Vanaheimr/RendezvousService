@@ -32,7 +32,8 @@
     <!-- The rendezvous library itself is tested within HermodTests, this project
          only covers what the application adds: the hosted service, the
          IValidateOptions adapter, the command line switches, the
-         composition of the host, and the build stamp. -->
+         composition of the host, how the process ends when it can not
+         start, and the build stamp. -->
     <ProjectReference Include="..\RendezvousService\RendezvousService.csproj" />
   </ItemGroup>
 

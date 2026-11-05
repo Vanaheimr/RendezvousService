@@ -110,12 +110,17 @@ namespace org.GraphDefined.Vanaheimr.RendezvousService.Tests
 
             using var signer = ControlSigner.GenerateEd25519("operator-1");
 
+            // Three different timestamps, so that none of them can stand in for
+            // another unnoticed. They are only bound here, never compared with
+            // the clock, so a date in the past does not age this test.
             var options = Bind(("Rendezvous:ControlKeys:0:Id",              "operator-1"),
                                ("Rendezvous:ControlKeys:0:KeyType",         "Ed25519"),
                                ("Rendezvous:ControlKeys:0:PublicKey",       Convert.ToBase64String(signer.PublicKey)),
+                               ("Rendezvous:ControlKeys:0:NotBefore",       "2026-01-01T00:00:00Z"),
                                ("Rendezvous:ControlKeys:0:NotAfter",        "2026-12-31T23:59:59Z"),
                                ("Rendezvous:ControlKeys:0:Description",     "The operator on duty"),
                                ("Rendezvous:ControlKeys:0:IsAdministrator", "true"),
+                               ("Rendezvous:ControlKeys:0:Created",         "2025-12-15T10:30:00Z"),
                                ("Rendezvous:ControlKeys:0:CreatedBy",       "achim"));
 
             Assert.That(options.ControlKeys,        Has.Count.EqualTo(1));
@@ -131,6 +136,10 @@ namespace org.GraphDefined.Vanaheimr.RendezvousService.Tests
                 Assert.That(key!.KeyType,          Is.EqualTo(SignatureKeyType.Ed25519));
                 Assert.That(key!.PublicKey,        Is.EqualTo(signer.PublicKey));
                 Assert.That(key!.IsAdministrator,  Is.True, "An administrator key must be recognizable from the configuration!");
+                Assert.That(key!.NotBefore,        Is.EqualTo(new DateTimeOffset(2026,  1,  1,  0,  0,  0, TimeSpan.Zero)));
+                Assert.That(key!.NotAfter,         Is.EqualTo(new DateTimeOffset(2026, 12, 31, 23, 59, 59, TimeSpan.Zero)),
+                            "A key meant to expire must not be bound as one that never does!");
+                Assert.That(key!.Created,          Is.EqualTo(new DateTimeOffset(2025, 12, 15, 10, 30,  0, TimeSpan.Zero)));
                 Assert.That(key!.CreatedBy,        Is.EqualTo("achim"));
                 Assert.That(key!.Description,      Is.EqualTo("The operator on duty"));
             });

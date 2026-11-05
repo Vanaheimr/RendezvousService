@@ -88,6 +88,7 @@ namespace org.GraphDefined.Vanaheimr.RendezvousService.Tests
 
             await using var service = CreateService(out var manager, out var signer);
             await using var _       = manager;
+            using var       __      = signer;
 
             Assert.That(service.ControlServer.IsRunning, Is.False,
                         "Nothing may listen before the host started the service!");

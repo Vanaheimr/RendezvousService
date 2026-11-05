@@ -5,8 +5,8 @@
 
 Two badges, and the difference between them is which libraries they build
 against. **CI** gates every push on the revisions `libs/` pins - what a fresh
-`git clone --recurse-submodules` produces - on Windows and Debian 13: **22 of
-22, nothing skipped**, on both. **Nightly** runs the same tests on the same two
+`git clone --recurse-submodules` produces - on Windows and Debian 13: **25 of
+25, nothing skipped**, on both. **Nightly** runs the same tests on the same two
 platforms with Hermod and Styx moved to master, because a push to either does
 not touch this repository and the pins keep the gate green through any amount
 of movement underneath. Red there and green here means a library changed in a
@@ -208,7 +208,7 @@ keys only, a private key has no business being in a configuration file:
     "KeyType":         "Ed25519",
     "PublicKey":       "<base64 of the raw public key>",
     "NotBefore":       "2026-01-01T00:00:00Z",
-    "NotAfter":        "2026-12-31T23:59:59Z",
+    "NotAfter":        "2027-12-31T23:59:59Z",
     "Description":     "The operator on duty",
     "IsAdministrator": false,
     "CreatedBy":       "achim"
@@ -555,7 +555,20 @@ nc 127.0.0.1 20000
 | `DefaultProfile` | `Balanced` | Transfer profile for commands without one |
 | `Profiles.*` | see above | Buffer sizes and TCP parameters per profile |
 
-An invalid configuration fails the startup with a list of all problems.
+An invalid configuration ends the service before it starts, with exit code 1
+and one log line per problem, and without a stack trace:
+
+```
+crit: Rendezvous[0]
+      Invalid configuration: Rendezvous.IdleTimeout must be positive, but is 00:00:00!
+crit: Rendezvous[0]
+      Invalid configuration: Rendezvous.MinDataPort (2000) must not be greater than MaxDataPort (1500)!
+```
+
+Every value the validator rejects is listed at once. A value that can not even
+be read - a port of `70000`, a timeout of `soon` - stops the binder at that
+value, so that one is reported alone. A control port that is already taken
+ends the service with exit code 1 as well, after the host logged why.
 
 ## Source layout
 
@@ -584,9 +597,10 @@ Directory.Build.props              stamps repository and commit into every assem
 .github/workflows/                 ci.yml (the pinned submodules), nightly.yml (master)
 ```
 
-`Program.cs` holds no logic of its own: the command line switches and every
-registration live in `RendezvousCommandLine` and `AddRendezvousService`, so that
-the tests compose and start the very same host.
+`Program.cs` holds no logic of its own beyond how the process ends when it can
+not start: the command line switches and every registration live in
+`RendezvousCommandLine` and `AddRendezvousService`, so that the tests compose
+and start the very same host.
 
 Everything that binds to a framework - `IHostedService`, `IOptions`,
 `IValidateOptions`, the configuration binder - lives in the application. The
@@ -605,14 +619,18 @@ dotnet test libs/Hermod/HermodTests/HermodTests.csproj --filter "FullyQualifiedN
 dotnet test RendezvousServiceTests/RendezvousServiceTests.csproj
 ```
 
-189 NUnit tests for the library, 22 for the application: the hosted service, the
+189 NUnit tests for the library, 25 for the application: the hosted service, the
 options validator, the configuration binding, the command line switches, the
 host composed by `AddRendezvousService` - started, stopped, refusing an invalid
-configuration, and handing the configuration on to the `RendezvousManager` - one
-that starts the service as a process from a foreign working directory, to prove
-it still finds its `appsettings.json`, and two for the build stamp: every
-assembly must name the commit of its own repository, not of the one it was
-built in.
+configuration, and handing the configuration on to the `RendezvousManager` - and
+two for the build stamp: every assembly must name the commit of its own
+repository, not of the one it was built in.
+
+Four of them start the service as a process of its own, from a foreign working
+directory: one to prove it still finds its `appsettings.json`, and three that
+must see it end with exit code 1 rather than as a crash - on a value that can
+not be read and on several values the validator rejects (all of them reported,
+neither with a stack trace), and on a control port that is already taken.
 
 The application tests run in CI on Windows and Debian 13, against the pinned
 submodules on every push and against their master every night (see the badges
