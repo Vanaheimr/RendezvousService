@@ -1,5 +1,17 @@
 # Vanaheimr RendezvousService
 
+[![CI](https://github.com/Vanaheimr/RendezvousService/actions/workflows/ci.yml/badge.svg)](https://github.com/Vanaheimr/RendezvousService/actions/workflows/ci.yml)
+[![Nightly](https://github.com/Vanaheimr/RendezvousService/actions/workflows/nightly.yml/badge.svg)](https://github.com/Vanaheimr/RendezvousService/actions/workflows/nightly.yml)
+
+Two badges, and the difference between them is which libraries they build
+against. **CI** gates every push on the revisions `libs/` pins - what a fresh
+`git clone --recurse-submodules` produces - on Windows and Debian 13: **22 of
+22, nothing skipped**, on both. **Nightly** runs the same tests on the same two
+platforms with Hermod and Styx moved to master, because a push to either does
+not touch this repository and the pins keep the gate green through any amount
+of movement underneath. Red there and green here means a library changed in a
+way this service can see. Both count a skipped test as a failure.
+
 A small TCP rendezvous service: a control client asks for two (or more) TCP ports,
 the service opens one listener per port, waits for the clients and then relays the
 data between them. Two clients get a plain bidirectional pipe, three or more clients
@@ -471,6 +483,15 @@ It is off by default, and two things are worth knowing before turning it on:
 
 ## Running
 
+Hermod and Styx are submodules under `libs/`, so clone with them:
+
+```bash
+git clone --recurse-submodules https://github.com/Vanaheimr/RendezvousService.git
+```
+
+Their URLs in `.gitmodules` are relative (`../Hermod.git`), so a clone from one of
+the GraphDefined mirrors fetches them from that same mirror.
+
 ```bash
 dotnet run --project RendezvousService
 ```
@@ -560,6 +581,7 @@ RendezvousService/                 the application, namespace ...Rendezvous.Serv
 RendezvousServiceTests/            tests for the application, none for the library
 
 Directory.Build.props              stamps repository and commit into every assembly
+.github/workflows/                 ci.yml (the pinned submodules), nightly.yml (master)
 ```
 
 `Program.cs` holds no logic of its own: the command line switches and every
@@ -591,6 +613,10 @@ that starts the service as a process from a foreign working directory, to prove
 it still finds its `appsettings.json`, and two for the build stamp: every
 assembly must name the commit of its own repository, not of the one it was
 built in.
+
+The application tests run in CI on Windows and Debian 13, against the pinned
+submodules on every push and against their master every night (see the badges
+at the top). The library tests run in Hermod's CI and nightly.
 
 The library tests cover the command parser (including all of its error cases), the
 configuration validation, the transfer profiles, real TCP relaying in both

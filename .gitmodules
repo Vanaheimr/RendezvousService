@@ -1,6 +1,6 @@
 [submodule "libs/Styx"]
 	path = libs/Styx
-	url = git@github.com:Vanaheimr/Styx.git
+	url = ../Styx.git
 [submodule "libs/Hermod"]
 	path = libs/Hermod
-	url = git@github.com:Vanaheimr/Hermod.git
+	url = ../Hermod.git

@@ -1,0 +1,183 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  # Manual runs from the Actions tab ("Run workflow"), same as nightly.yml.
+  workflow_dispatch:
+
+concurrency:
+  # Pull requests: one run per branch, newest wins — a run against a head
+  # that has been superseded is answering a question nobody is asking any
+  # more.
+  #
+  # Pushes: one run per commit, and nothing cancels anything. A commit with
+  # no verdict is a hole nobody comes back to fill: the next commit contains
+  # it, so the code does get tested eventually, but once that run is red
+  # there is no longer any way to say which of the two commits did it.
+  #
+  # Keying the group on the SHA, rather than only turning cancel-in-progress
+  # off, is what makes that hold for more than two pushes: a group keeps at
+  # most one run *pending*, so a third push discards the second before it
+  # ever starts.
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build-and-test:
+    # Two legs, as in Hermod and every repository built on it: windows-latest,
+    # and Debian 13 — which is what a service like this one runs on once it is
+    # deployed. GitHub offers no Debian runner image, so that leg runs in a bare
+    # debian:13 container on an Ubuntu runner, the same container Hermod's gate
+    # uses.
+    #
+    # Both legs earn their place here. Two of the tests start the service as a
+    # process of its own and ask git about the tree it was built from, and both
+    # paths and processes are a platform's answer: a content root compared on a
+    # case-insensitive file system, a git that refuses a checkout owned by
+    # somebody else.
+    #
+    # Measured before this workflow first ran, on 2026-11-05: 22 of 22 on
+    # Windows 11 with .NET 10.0.403, and 22 of 22 on Debian 13.7 (WSL) with
+    # .NET 10.0.401, nothing skipped on either.
+    #
+    # fail-fast is off on purpose: "red on exactly one platform" is the most
+    # valuable signal this matrix produces, so one leg must not cancel the
+    # other.
+    #
+    # `leg` exists so the two runs can be told apart by name rather than by
+    # runner image: the Linux leg runs on ubuntu-latest but IS Debian 13, and
+    # an artifact called "test-results-ubuntu-latest" would say the opposite of
+    # what it contains.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            leg: windows-latest
+          - os: ubuntu-latest
+            container: debian:13
+            leg: debian-13-container
+    name: ${{ matrix.leg }}
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    steps:
+
+      # git BEFORE the checkout, which is the unusual part — and it has to be.
+      # actions/checkout only produces a git clone when it finds a git binary;
+      # without one it silently falls back to downloading a source tarball over
+      # the REST API, and that path cannot fetch submodules at all. The build
+      # would then fail on a missing Hermod rather than on anything true.
+      #
+      # The rest is what a bare debian:13 needs before setup-dotnet can install
+      # the SDK: curl for the install script, ICU and tzdata for globalization,
+      # libssl3t64 for crypto, ca-certificates for NuGet over HTTPS. Package
+      # names verified on trixie.
+      #
+      # Two lines of git configuration, both --system so that they hold for
+      # every git call in the job, whatever HOME actions/checkout sets up:
+      #
+      # http.version HTTP/1.1, because Debian's git negotiates HTTP/2 with
+      # github.com, and NTSConformanceTests' nightly once went red before its
+      # first test with "Error in the HTTP2 framing layer" while fetching a
+      # submodule. actions/checkout retries its main fetch but not the
+      # submodule update.
+      #
+      # safe.directory, because in the container the checkout is owned by
+      # another uid than the one the job runs as, and git refuses to answer for
+      # such a tree. Directory.Build.props asks git which commit it is building,
+      # and would stamp "unknown" into every assembly - which
+      # BuildProvenanceTests would then report as a skip, and the step after
+      # the tests as a red run.
+      - name: Install git and the .NET prerequisites (Debian container)
+        if: runner.os == 'Linux'
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git libicu76 libssl3t64 libstdc++6 tzdata
+          git config --system http.version HTTP/1.1
+          git config --system --add safe.directory '*'
+
+      # Windows only, and also before the checkout: the submodules are fetched
+      # by that step, and Hermod carries FontAwesome icon files whose paths
+      # exceed MAX_PATH once nested under the runner's workspace and
+      # libs/Hermod. Without this the submodule checkout fails with "Filename
+      # too long" and leaves the working tree half-populated.
+      - name: Allow long paths (Windows)
+        if: runner.os == 'Windows'
+        run: git config --system core.longpaths true
+
+      # One checkout, which is the whole build: libs/ pins Hermod and Styx, and
+      # the gate therefore tests the set a fresh `git clone --recurse-submodules`
+      # produces.
+      #
+      # The URLs in .gitmodules are relative (../Hermod.git), so they resolve
+      # against wherever this repository came from: https://github.com/... here,
+      # with no deploy key and no URL rewriting, and git1 or git2 for a clone
+      # from one of those.
+      #
+      # `true` rather than `recursive`: neither submodule carries submodules of
+      # its own, and `true` cannot quietly grow a second copy of anything if one
+      # is added below.
+      #
+      # What a pinned build does not notice is a breaking change upstream.
+      # That is nightly.yml's question: the same matrix, with the submodules
+      # moved to master.
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+
+      # The test project is the root of everything: building it builds the
+      # service, and under that Hermod and Styx.
+      - name: Build
+        run: dotnet build RendezvousServiceTests/RendezvousServiceTests.csproj --configuration Release
+
+      # The tests of the application, and only those. The rendezvous library
+      # lives in Hermod, and its 189 tests run in Hermod's own gate and nightly,
+      # on the same two platforms; building HermodTests here once more would
+      # cost minutes per leg to learn the same thing again.
+      - name: Test
+        timeout-minutes: 15
+        run: >
+          dotnet test RendezvousServiceTests/RendezvousServiceTests.csproj --configuration Release --no-build
+          --logger "console;verbosity=normal"
+          --logger "trx;LogFileName=${{ matrix.leg }}.trx"
+          --results-directory artifacts
+
+      # A skipped test passes, and dotnet test reports the run as green. The
+      # tests here only skip when something they need is missing - git, above
+      # all - and that is exactly what must not go unnoticed: a leg that skips
+      # its provenance test has measured nothing about the provenance. So the
+      # gate requires every test to have passed.
+      #
+      # passed against total, and not the notExecuted counter: an NUnit test
+      # that was ignored leaves notExecuted at 0 in the .trx and only shows as
+      # the difference between the two (checked with a probe, 2026-11-05).
+      - name: Nothing skipped
+        shell: bash
+        run: |
+          counters=$(grep -o '<Counters [^>]*>' "artifacts/${{ matrix.leg }}.trx")
+          total=$(echo "$counters"  | sed -E 's/.* total="([0-9]+)".*/\1/')
+          passed=$(echo "$counters" | sed -E 's/.* passed="([0-9]+)".*/\1/')
+          echo "$passed of $total passed (${{ matrix.leg }})" | tee -a "$GITHUB_STEP_SUMMARY"
+          [ "$total" -gt 0 ] && [ "$passed" -eq "$total" ]
+
+      # The console log answers "did it pass" and almost nothing else, and it
+      # ages out with the run. TRX keeps the outcome, duration, error message,
+      # stack trace and the reason for every skip.
+      #
+      # !cancelled() rather than success(): a red run is when these files matter
+      # most, so uploading only on green would discard the evidence in exactly
+      # that case. A build that fails before the test step leaves no .trx, which
+      # upload-artifact reports as a warning rather than a second failure — the
+      # compile error is the finding there.
+      - name: Upload test results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-${{ matrix.leg }}
+          path: artifacts/*.trx

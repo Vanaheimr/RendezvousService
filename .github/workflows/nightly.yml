@@ -1,0 +1,164 @@
+name: Nightly
+
+# The counterpart to ci.yml, and the two ask deliberately different questions.
+#
+# The gate builds what the gitlinks pin, which is what a fresh
+# `git clone --recurse-submodules` produces and therefore the right question for
+# "does this repository still work for whoever clones it". It is also the
+# question that cannot go red on its own: a push to Hermod or Styx does not
+# touch this repository at all, so the pins keep the gate green through any
+# amount of upstream movement — and they do drift.
+#
+# This workflow moves both submodules to master before building. Red here and
+# green there means a library underneath changed in a way this service can see,
+# which is a finding rather than a build failure, and it arrives on the day it
+# was made rather than at the next pin bump.
+#
+# Note what it does NOT run: the rendezvous library's own tests. They live in
+# Hermod, and Hermod's nightly runs them against its master every night already.
+# What only this repository can ask is whether the service still builds and
+# behaves on top of it.
+#
+# Two things worth knowing about scheduled workflows: they only ever run on the
+# default branch, and GitHub disables them after 60 days without any repository
+# activity. If this stops reporting, that is the first thing to check.
+on:
+  schedule:
+    # 02:53 UTC. Off the hour on purpose — GitHub's scheduler is busiest then
+    # and delays runs by tens of minutes — and after Hermod's nightly at 02:17,
+    # so that a red night here can be read next to Hermod's own verdict on the
+    # same master. Nothing enforces that ordering and a delayed run breaks it,
+    # so it is a convenience for reading the badges in the morning, not a
+    # mechanism.
+    - cron: '53 2 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  against-master:
+    # The same two-leg matrix as ci.yml, and both legs earn their place here
+    # for the same reason they do there: a change upstream that only shows on
+    # one of the two platforms is exactly the kind this lane exists to catch.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            leg: windows-latest
+          - os: ubuntu-latest
+            container: debian:13
+            leg: debian-13-container
+    name: master (${{ matrix.leg }})
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    steps:
+
+      # git must be installed BEFORE the checkout: without a git binary,
+      # actions/checkout silently falls back to a REST tarball, which cannot
+      # fetch submodules — and here that would leave nothing to move to master.
+      # The rest is what a bare debian:13 needs before setup-dotnet can install
+      # the SDK. Package names verified on trixie.
+      #
+      # HTTP/1.1 and safe.directory for the reasons given in ci.yml; the second
+      # one matters twice here, because moving the submodules below is git
+      # working in trees owned by another uid as well.
+      - name: Install git and the .NET prerequisites (Debian container)
+        if: runner.os == 'Linux'
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git libicu76 libssl3t64 libstdc++6 tzdata
+          git config --system http.version HTTP/1.1
+          git config --system --add safe.directory '*'
+
+      # Hermod's FontAwesome icons exceed MAX_PATH under the runner's workspace
+      # plus libs/Hermod; without this the submodule checkout fails with
+      # "Filename too long" and leaves the working tree half-populated.
+      - name: Allow long paths (Windows)
+        if: runner.os == 'Windows'
+        run: git config --system core.longpaths true
+
+      # `true` rather than `recursive`, as in ci.yml: neither submodule carries
+      # submodules of its own.
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      # The one step that makes this workflow different from the gate.
+      #
+      # `git fetch origin master` and not `git submodule update --remote`:
+      # --remote follows the branch recorded in refs/remotes/origin/HEAD, and
+      # that is a local note taken once at clone time rather than a question
+      # asked of the far side. It has walked a submodule *backwards* before, in
+      # XMPPConsole, to a revision from around the master/main rename. Naming the
+      # branch means the same thing in every clone and on every runner.
+      #
+      # `shell: bash` so one script serves both legs: the Windows default is
+      # PowerShell, where `>> "$GITHUB_STEP_SUMMARY"` is not redirection to a
+      # file but a parse error.
+      #
+      # The revisions go into the step summary because they are the whole
+      # premise of the run: a red night is only readable next to the two SHAs
+      # it was red against. The service logs the same two at startup, from the
+      # stamp Directory.Build.props put into each assembly.
+      - name: Move the submodules to master
+        shell: bash
+        run: |
+          git submodule foreach 'git fetch origin master && git checkout FETCH_HEAD'
+          {
+            echo "### Submodule revisions under test (${{ matrix.leg }})"
+            echo '```'
+            git submodule status
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+
+      # The test project is the root of everything: building it builds the
+      # service, and under that Hermod and Styx — at master now. This is also
+      # where most of what this workflow catches will show up: the service
+      # reaches into the library's surface, so a rename over there arrives as a
+      # compile error here. RendezvousCommandLine builds its configuration keys
+      # with nameof for exactly that reason - a renamed option is a compile
+      # error rather than a switch that silently does nothing.
+      - name: Build
+        run: dotnet build RendezvousServiceTests/RendezvousServiceTests.csproj --configuration Release
+
+      # The same tests the gate runs. With the submodules moved, the service's
+      # own commit is stamped "-dirty" - the gitlinks no longer match - and
+      # BuildProvenanceTests expects exactly that.
+      - name: Test
+        timeout-minutes: 15
+        run: >
+          dotnet test RendezvousServiceTests/RendezvousServiceTests.csproj --configuration Release --no-build
+          --logger "console;verbosity=normal"
+          --logger "trx;LogFileName=${{ matrix.leg }}.trx"
+          --results-directory artifacts
+
+      # A skipped test passes; see ci.yml for why this lane must not. A
+      # different number against master is the point of the workflow, in either
+      # direction: fewer means something stopped being measured.
+      - name: Nothing skipped
+        shell: bash
+        run: |
+          counters=$(grep -o '<Counters [^>]*>' "artifacts/${{ matrix.leg }}.trx")
+          total=$(echo "$counters"  | sed -E 's/.* total="([0-9]+)".*/\1/')
+          passed=$(echo "$counters" | sed -E 's/.* passed="([0-9]+)".*/\1/')
+          echo "$passed of $total passed against master (${{ matrix.leg }})" | tee -a "$GITHUB_STEP_SUMMARY"
+          [ "$total" -gt 0 ] && [ "$passed" -eq "$total" ]
+
+      # TRX keeps per test what the console log does not: the skip reason, the
+      # error message and the stack trace, and it survives the run ageing out.
+      #
+      # !cancelled() rather than success(): a red night is when these files
+      # matter most, and uploading only on green would throw away the evidence
+      # in exactly that case.
+      - name: Upload test results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-master-${{ matrix.leg }}
+          path: artifacts/*.trx
