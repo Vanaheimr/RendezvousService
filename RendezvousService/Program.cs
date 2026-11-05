@@ -46,11 +46,20 @@ builder.Configuration.AddRendezvousCommandLine(args);
 builder.Services.     AddRendezvousService    (builder.Configuration);
 
 var host     = builder.Build();
+var logger   = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Rendezvous");
+
+#region Log what this was built from
+
+// Before the configuration is read, so that a log of a service that refused
+// its configuration still says which code refused it.
+logger.LogInformation("Built from {BuiltFrom}.",
+                      String.Join(", ", BuildProvenance.BuiltFrom()));
+
+#endregion
 
 #region Log the effective configuration
 
 var options  = host.Services.GetRequiredService<IOptions<RendezvousOptions>>().Value;
-var logger   = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Rendezvous");
 
 logger.LogInformation("Rendezvous ports {MinDataPort} - {MaxDataPort} on {DataAddress}, " +
                       "rendezvous timeout {RendezvousTimeout}, idle timeout {IdleTimeout}, " +

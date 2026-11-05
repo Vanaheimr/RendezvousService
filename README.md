@@ -489,6 +489,19 @@ e.g. `--Rendezvous:MaxSessions 42`.
 directory: a systemd unit needs no `WorkingDirectory` for it, and `dotnet run
 --project RendezvousService` from the repository reads it as well.
 
+The first line the service logs says what it was built from - each repository
+with the commit `Directory.Build.props` stamped into its assembly at build time,
+and `-dirty` when its working tree had changes:
+
+```
+Built from RendezvousService 050bacc…, Hermod 44a69ed…, Styx 7642de3….
+```
+
+That is the tree the code was compiled from, not whatever is checked out when the
+service starts, so it is the line to quote in a bug report. The same
+`Directory.Build.props` is in Hermod and Styx, byte for byte, and each copy
+imports the one above it.
+
 The control endpoint speaks signed CBOR, so it can not be driven from a shell -
 open the rendezvous with `RendezvousControlClient` (see [The control
 client](#the-control-client)). The *data* ports are plain TCP, so `telnet` and
@@ -541,9 +554,12 @@ RendezvousService/                 the application, namespace ...Rendezvous.Serv
                                    RendezvousServiceCollectionExtensions (AddRendezvousService)
   Configuration/                   RendezvousOptionsValidator (IValidateOptions),
                                    RendezvousCommandLine (the command line switches)
+  BuildProvenance.cs               the commits stamped into the three assemblies
   Program.cs                       the generic host, built from the two above
 
 RendezvousServiceTests/            tests for the application, none for the library
+
+Directory.Build.props              stamps repository and commit into every assembly
 ```
 
 `Program.cs` holds no logic of its own: the command line switches and every
@@ -567,12 +583,14 @@ dotnet test libs/Hermod/HermodTests/HermodTests.csproj --filter "FullyQualifiedN
 dotnet test RendezvousServiceTests/RendezvousServiceTests.csproj
 ```
 
-189 NUnit tests for the library, 20 for the application: the hosted service, the
+189 NUnit tests for the library, 22 for the application: the hosted service, the
 options validator, the configuration binding, the command line switches, the
 host composed by `AddRendezvousService` - started, stopped, refusing an invalid
-configuration, and handing the configuration on to the `RendezvousManager` - and
-one that starts the service as a process from a foreign working directory, to
-prove it still finds its `appsettings.json`.
+configuration, and handing the configuration on to the `RendezvousManager` - one
+that starts the service as a process from a foreign working directory, to prove
+it still finds its `appsettings.json`, and two for the build stamp: every
+assembly must name the commit of its own repository, not of the one it was
+built in.
 
 The library tests cover the command parser (including all of its error cases), the
 configuration validation, the transfer profiles, real TCP relaying in both
