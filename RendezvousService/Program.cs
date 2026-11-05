@@ -17,7 +17,6 @@
 
 #region Usings
 
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -28,48 +27,12 @@ using org.GraphDefined.Vanaheimr.Rendezvous.Service;
 
 #endregion
 
-var builder = Host.CreateApplicationBuilder(args);
+// Both steps live in their own types, so that the tests compose the very
+// same host: RendezvousCommandLine and RendezvousServiceCollectionExtensions.
+var builder  = Host.CreateApplicationBuilder(args);
 
-#region Command line switches
-
-builder.Configuration.AddCommandLine(
-    args,
-    new Dictionary<String, String> {
-        { "--control-address",     $"{RendezvousOptions.SectionName}:ControlAddress"     },
-        { "--control-port",        $"{RendezvousOptions.SectionName}:ControlPort"        },
-        { "--data-address",        $"{RendezvousOptions.SectionName}:DataAddress"        },
-        { "--min-port",            $"{RendezvousOptions.SectionName}:MinDataPort"        },
-        { "--max-port",            $"{RendezvousOptions.SectionName}:MaxDataPort"        },
-        { "--rendezvous-timeout",  $"{RendezvousOptions.SectionName}:RendezvousTimeout"  },
-        { "--idle-timeout",        $"{RendezvousOptions.SectionName}:IdleTimeout"        },
-        { "--profile",             $"{RendezvousOptions.SectionName}:DefaultProfile"     }
-    }
-);
-
-#endregion
-
-#region Services
-
-builder.Services.AddSingleton(TimeProvider.System);
-
-builder.Services.AddSingleton<IValidateOptions<RendezvousOptions>, RendezvousOptionsValidator>();
-
-builder.Services.AddOptions<RendezvousOptions>().
-                 Bind(builder.Configuration.GetSection(RendezvousOptions.SectionName)).
-                 ValidateOnStart();
-
-// The library knows nothing about IOptions or dependency injection, the
-// application hands it what it needs. The manager looks after its own
-// timeouts, therefore there is no janitor to register here.
-builder.Services.AddSingleton(serviceProvider => new RendezvousManager(
-                                                     serviceProvider.GetRequiredService<IOptions<RendezvousOptions>>().Value,
-                                                     serviceProvider.GetRequiredService<TimeProvider>(),
-                                                     serviceProvider.GetRequiredService<ILoggerFactory>()
-                                                 ));
-
-builder.Services.AddHostedService<ControlServerService>();
-
-#endregion
+builder.Configuration.AddRendezvousCommandLine(args);
+builder.Services.     AddRendezvousService    (builder.Configuration);
 
 var host     = builder.Build();
 

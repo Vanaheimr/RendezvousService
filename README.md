@@ -481,8 +481,9 @@ dotnet run --project RendezvousService -- --control-port 8500 --idle-timeout 00:
 
 Command line switches: `--control-address`, `--control-port`, `--data-address`,
 `--min-port`, `--max-port`, `--rendezvous-timeout`, `--idle-timeout`, `--profile`.
-Everything else is configured in `appsettings.json` (section `Rendezvous`) or via
-`Rendezvous__*` environment variables.
+Everything else is configured in `appsettings.json` (section `Rendezvous`), via
+`Rendezvous__*` environment variables, or in its long form on the command line,
+e.g. `--Rendezvous:MaxSessions 42`.
 
 The control endpoint speaks signed CBOR, so it can not be driven from a shell -
 open the rendezvous with `RendezvousControlClient` (see [The control
@@ -532,12 +533,18 @@ libs/Hermod/Hermod/Rendezvous/     the library (submodule)
 libs/Hermod/HermodTests/Rendezvous/   its tests (submodule)
 
 RendezvousService/                 the application, namespace ...Rendezvous.Service
-  Hosting/                         ControlServerService (IHostedService, ten lines)
-  Configuration/                   RendezvousOptionsValidator (IValidateOptions)
-  Program.cs                       the generic host
+  Hosting/                         ControlServerService (IHostedService, ten lines),
+                                   RendezvousServiceCollectionExtensions (AddRendezvousService)
+  Configuration/                   RendezvousOptionsValidator (IValidateOptions),
+                                   RendezvousCommandLine (the command line switches)
+  Program.cs                       the generic host, built from the two above
 
-RendezvousServiceTests/            tests for those two, nothing else
+RendezvousServiceTests/            tests for the application, none for the library
 ```
+
+`Program.cs` holds no logic of its own: the command line switches and every
+registration live in `RendezvousCommandLine` and `AddRendezvousService`, so that
+the tests compose and start the very same host.
 
 Everything that binds to a framework - `IHostedService`, `IOptions`,
 `IValidateOptions`, the configuration binder - lives in the application. The
@@ -556,9 +563,10 @@ dotnet test libs/Hermod/HermodTests/HermodTests.csproj --filter "FullyQualifiedN
 dotnet test RendezvousServiceTests/RendezvousServiceTests.csproj
 ```
 
-190 NUnit tests for the library, 11 for the application (the hosted service, the
-options validator and the configuration binding - everything else it does is one
-Program.cs).
+189 NUnit tests for the library, 19 for the application: the hosted service, the
+options validator, the configuration binding, the command line switches, and the
+host composed by `AddRendezvousService` - started, stopped, refusing an invalid
+configuration, and handing the configuration on to the `RendezvousManager`.
 
 The library tests cover the command parser (including all of its error cases), the
 configuration validation, the transfer profiles, real TCP relaying in both

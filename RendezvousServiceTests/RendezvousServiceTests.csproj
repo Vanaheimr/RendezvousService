@@ -30,8 +30,9 @@
 
   <ItemGroup>
     <!-- The rendezvous library itself is tested within HermodTests, this project
-         only covers what the application adds: the hosted service and the
-         IValidateOptions adapter. -->
+         only covers what the application adds: the hosted service, the
+         IValidateOptions adapter, the command line switches and the
+         composition of the host. -->
     <ProjectReference Include="..\RendezvousService\RendezvousService.csproj" />
   </ItemGroup>
 
