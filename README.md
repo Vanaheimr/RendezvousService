@@ -27,7 +27,7 @@ It comes in two parts:
 So the whole service is one way to use the library, not the only one - see
 [The C# API](#the-c-api) below.
 
-Everything is built on .NET 10 with `TimeProvider`, `System.Threading.Channels`
+Everything is built on .NET 11 with `TimeProvider`, `System.Threading.Channels`
 and pooled buffers.
 
 ## The control protocol
@@ -132,7 +132,7 @@ Two signature families, and nothing else:
 | **ML-DSA-87** | 2592 B | 4627 B | post-quantum, NIST level 5 |
 
 EdDSA comes from BouncyCastle and is therefore always available; ML-DSA (FIPS 204)
-is the native `System.Security.Cryptography.MLDsa` of .NET 10 and needs platform
+is the native `System.Security.Cryptography.MLDsa` of .NET (since .NET 10) and needs platform
 support - check `ControlKey.IsMLDsaSupported`. Note the sizes: a single ML-DSA-87
 signature is larger than the 4 KByte a line based protocol would ever have needed,
 which is why `MaxFrameLength` defaults to 64 KByte.

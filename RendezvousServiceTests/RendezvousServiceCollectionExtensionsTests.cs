@@ -114,7 +114,7 @@ namespace org.GraphDefined.Vanaheimr.RendezvousService.Tests
         }
 
         [Test]
-        public void TheConfigurationIsValidatedOnStart()
+        public async Task TheConfigurationIsValidatedOnStart()
         {
 
             using var host = BuildHost(("Rendezvous:MaxSessions", "0"));
@@ -123,10 +123,16 @@ namespace org.GraphDefined.Vanaheimr.RendezvousService.Tests
             // endpoint reads - and thereby validates - the configuration in its
             // constructor. ValidateOnStart is what keeps that true when it no longer
             // does, so it is asked for here directly.
-            var validator = host.Services.GetService<IStartupValidator>();
+            //
+            // As IAsyncStartupValidator: since .NET 11 the synchronous
+            // IStartupValidator is obsolete (SYSLIB0066), and ValidateOnStart
+            // registers its one validator as both.
+            var validator = host.Services.GetService<IAsyncStartupValidator>();
 
             Assert.That(validator, Is.Not.Null, "ValidateOnStart is missing!");
-            Assert.Throws<OptionsValidationException>(validator!.Validate);
+            await Assert.ThrowsAsync<OptionsValidationException>(
+                      async () => await validator!.ValidateAsync(CancellationToken.None)
+                  );
 
         }
 
